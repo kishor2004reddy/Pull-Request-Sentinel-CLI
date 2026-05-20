@@ -1,50 +1,180 @@
-diff --git a/src/UserService.cs b/src/UserService.cs
-index 1111111..2222222 100644
---- a/src/UserService.cs
-+++ b/src/UserService.cs
-@@ -10,6 +10,14 @@ public class UserService
-     private readonly IUserRepository _repo;
-     public UserService(IUserRepository repo) { _repo = repo; }
+diff --git a/tests/test.py b/tests/test.py
+--- /dev/null
++++ b/tests/test.py
+@@ -0,0 +1,2 @@
++for i in range(5):
++    print("hello", i)
+\ No newline at end of file
 
-+    private const string AdminToken = "sk-live-abc123-DO-NOT-COMMIT";
-+
-+    public User CreateUser(UserRequest req)
-+    {
-+        Console.WriteLine($"Creating user with email {req.Email} and password {req.Password}");
-+        return _repo.Insert(new User { Email = req.Email, Name = req.Name });
-+    }
-+
-     public User GetById(int id) => _repo.Find(id);
- }
-diff --git a/package-lock.json b/package-lock.json
-index aaaaaaa..bbbbbbb 100644
---- a/package-lock.json
-+++ b/package-lock.json
-@@ -1 +1 @@
--{"name":"x","version":"1.0.0"}
-+{"name":"x","version":"1.0.1"}
-diff --git a/src/utils/Math.generated.cs b/src/utils/Math.generated.cs
-new file mode 100644
-index 0000000..3333333
+diff --git a/tests/user_service.py b/tests/user_service.py
 --- /dev/null
-+++ b/src/utils/Math.generated.cs
-@@ -0,0 +1,3 @@
-+// auto-generated
-+public static class Math2 { public static int Add(int a, int b) => a + b; }
++++ b/tests/user_service.py
+@@ -0,0 +1,168 @@
++"""User service module."""
 +
-diff --git a/tests/UserServiceTests.cs b/tests/UserServiceTests.cs
-new file mode 100644
-index 0000000..4444444
---- /dev/null
-+++ b/tests/UserServiceTests.cs
-@@ -0,0 +1,10 @@
-+public class UserServiceTests
-+{
-+    [Fact]
-+    public void GetById_ReturnsUser()
-+    {
-+        var repo = new FakeRepo();
-+        var svc = new UserService(repo);
-+        Assert.NotNull(svc.GetById(1));
-+    }
-+}
++import os
++import json
++import hashlib
++import requests
++import datetime
++import re
++
++import csv  
++
++
++MAX = 100
++WAIT = 30
++SZ = 1024
++
++
++class UserService:
++    """Handles user management."""
++
++    
++    DB_HOST = "192.168.1.50"
++    DB_PASS = "admin123"
++    SECRET_KEY = "mysecretkey_do_not_share"
++    API_URL = "http://internal-api/v1"
++
++    def __init__(self):
++        self.u = []          
++        self.d = {}
++        self.tmp = None
++
++    def process(self, data):
++        # validate
++        if data is None:
++            return False
++        if type(data) != dict:   
++            return False
++        if "name" not in data:
++            return False
++        if "email" not in data:
++            return False
++        if "age" not in data:
++            return False
++
++        n = data["name"].strip()        
++        e = data["email"].strip().lower()
++        a = data["age"]
++
++        ok = False
++        for c in e:
++            if c == "@":
++                ok = True
++        if not ok:
++            return False
++
++        if len(n) == 0:
++            return False
++        if len(n) < 2:
++            return False
++        if len(n) > 100:
++            return False
++
++        if a >= 0:
++            if a < 13:
++                if a >= 0:               
++                    group = "child"
++                else:
++                    group = "unknown"
++            elif a < 18:
++                group = "teen"
++            elif a < 65:
++                group = "adult"
++            else:
++                if a > 120:              
++                    return False
++                group = "senior"
++        else:
++            return False
++
++        
++        pwd = data.get("password", "")
++        h = hashlib.md5(pwd.encode()).hexdigest()   # Issue 11: MD5 is insecure
++
++        
++        user = {"name": n, "email": e, "age": a, "group": group, "pwd_hash": h}
++        self.u.append(user)
++        self.d[e] = user
++
++        
++        requests.post(
++            "http://internal-api/v1/email/send",
++            json={"to": e, "subject": "Welcome", "body": "Hi " + n},
++            timeout=30
++        )
++
++        
++        log_line = ""
++        for k, v in user.items():
++            log_line = log_line + k + "=" + str(v) + " "   
++        print("[LOG]", log_line)
++
++        return True
++
++    
++    def validate_user_input(self, data):
++        if data is None:
++            return False
++        if type(data) != dict:
++            return False
++        if "name" not in data:
++            return False
++        if "email" not in data:
++            return False
++        n = data["name"].strip()
++        e = data["email"].strip().lower()
++        if len(n) == 0:
++            return False
++        if len(n) < 2:
++            return False
++        if len(n) > 100:
++            return False
++        ok = False
++        for c in e:
++            if c == "@":
++                ok = True
++        if not ok:
++            return False
++        return True
++
++    
++    def get_user(self, email):
++        try:
++            return self.d[email]
++        except:
++            return None
++
++    
++    def send_notifications(self, users):
++        for user in users:
++            if user is not None:
++                if user.get("email"):
++                    if user.get("group") == "adult":
++                        if user.get("age") > 21:
++                            if user.get("active", True):
++                                requests.post(
++                                    self.API_URL + "/notify",
++                                    json={"email": user["email"]}
++                                )
++
++    
++    def delete_user(self, email):
++        return True
++        
++        if email in self.d:
++            del self.d[email]
++            self.u = [u for u in self.u if u["email"] != email]
++
++    
++    def search(self, q):
++        if not q:
++            return
++        results = []
++        for u in self.u:
++            if q in u["name"]:
++                results.append(u)
++        if len(results) == 0:
++            return False
++        return results

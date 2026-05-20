@@ -2,7 +2,7 @@ from pathlib import Path
 
 import click
 
-from pr_sentinel import git_diff, diff_parser, report_generator
+from pr_sentinel import git_diff, diff_parser, orchestrator, report_generator
 from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel.chunker import DEFAULT_CHUNK_BUDGET
 
@@ -122,14 +122,20 @@ def review(
             f"Available: {', '.join(sorted(AGENT_REGISTRY))}"
         )
 
-    agent_results: list[dict] = []
-    for agent_key in available:
-        agent_cls = AGENT_REGISTRY[agent_key]
-        agent = agent_cls()
-        click.echo(f"Running {agent.display_name}...")
-        result = agent.run(files, chunk_budget=chunk_budget)
-        click.echo(f"  {len(result['findings'])} finding(s)")
-        agent_results.append(result)
+    click.echo(f"Running {len(available)} agent(s) in parallel: {', '.join(available)}")
+
+    def _on_finish(name: str, result_or_err: dict | Exception) -> None:
+        if isinstance(result_or_err, Exception):
+            click.echo(f"  {name}: FAILED ({result_or_err})", err=True)
+        else:
+            click.echo(f"  {name}: {len(result_or_err['findings'])} finding(s)")
+
+    agent_results = orchestrator.run_agents(
+        agent_keys=available,
+        files=files,
+        chunk_budget=chunk_budget,
+        on_finish=_on_finish,
+    )
 
     report = report_generator.build_report(
         agent_results=agent_results,
