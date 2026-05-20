@@ -14,6 +14,9 @@ setup(
     install_requires=[
         "click>=8.1",
     ],
+    extras_require={
+        "dev": ["pytest>=7.0"],
+    },
     entry_points={
         "console_scripts": [
             "pr-sentinel=pr_sentinel.cli:main",

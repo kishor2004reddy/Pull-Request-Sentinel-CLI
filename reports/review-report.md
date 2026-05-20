@@ -4,9 +4,9 @@
 - Risk Level: **High**
 - Source: `file:samples\sample.diff`
 - Base branch: `main`
-- Reviewed at: 2026-05-20T10:58:31+00:00
+- Reviewed at: 2026-05-20T11:17:39+00:00
 - Agents: Security Agent, Code Quality Agent, Performance Agent, Testing Agent
-- 39 finding(s): 13 High, 19 Medium, 7 Low.
+- 39 finding(s): 13 High, 21 Medium, 5 Low.
 
 ## Merge Verdict
 
@@ -14,19 +14,19 @@ Do not raise this PR or merge as-is. The review surfaced 13 High-severity issue(
 
 ## Key Findings
 
-- **High** — `tests/test.py` (`lines 1-2`) — Test file contains no assertions and no test functions—just a print loop. _(from Testing Agent)_
-- **High** — `tests/user_service.py` (`DB_PASS / SECRET_KEY constants`) — Hardcoded database password and secret key in source code. _(from Security Agent)_
-- **High** — `tests/user_service.py` (`process() - hashlib.md5(pwd.encode())`) — Password is hashed with unsalted MD5. _(from Security Agent)_
-- **High** — `tests/user_service.py` (`DB_HOST/DB_PASS/SECRET_KEY/API_URL class constants`) — Hardcoded credentials and secrets embedded as class constants. _(from Code Quality Agent)_
-- **High** — `tests/user_service.py` (`process(), requests.post to /email/send`) — External HTTP call has no error handling. _(from Code Quality Agent)_
+- **High** — `tests/test.py` (`lines 1-2`) — Test file contains only a print loop with no test functions or assertions. _(from Testing Agent)_
+- **High** — `tests/user_service.py` (`DB_PASS / SECRET_KEY class attributes`) — Hardcoded credentials and secret key in source code. _(from Security Agent)_
+- **High** — `tests/user_service.py` (`h = hashlib.md5(pwd.encode())`) — Password hashed with MD5, which is cryptographically broken and unsalted. _(from Security Agent)_
+- **High** — `tests/user_service.py` (`API_URL = "http://internal-api/v1" and requests.post("http://internal-api/...")`) — Sensitive traffic sent over plaintext HTTP. _(from Security Agent)_
+- **High** — `tests/user_service.py` (`lines 23-26 (class attributes)`) — Credentials and secrets hardcoded as class attributes (DB_PASS, SECRET_KEY, DB_HOST). _(from Code Quality Agent)_
 
 ## Key Recommendations
 
-- `tests/test.py` — Replace with real pytest/unittest test functions that import the code under test and assert specific behaviors.
-- `tests/user_service.py` — Load DB_PASS and SECRET_KEY from environment variables or a secrets manager, and rotate the exposed values immediately.
-- `tests/user_service.py` — Use a password-hashing function such as bcrypt, scrypt, or Argon2 with a per-user salt.
-- `tests/user_service.py` — Load these values from environment variables or a secrets manager, and remove the literals from the file.
-- `tests/user_service.py` — Wrap the call in try/except, log the failure with context, and decide whether to fail the request or queue a retry.
+- `tests/test.py` — Replace with actual unit tests using pytest/unittest that exercise UserService methods and assert specific outcomes.
+- `tests/user_service.py` — Remove the hardcoded values and load them from environment variables or a secrets manager (e.g., os.environ["DB_PASS"]); rotate the exposed credentials immediately.
+- `tests/user_service.py` — Use a slow, salted password hash such as bcrypt, scrypt, or argon2 (e.g., bcrypt.hashpw with a per-user salt).
+- `tests/user_service.py` — Use HTTPS endpoints and validate TLS certificates; configure the base URL from secure config rather than a literal http:// string.
+- `tests/user_service.py` — Load these values from environment variables or a secrets manager and remove them from source.
 
 ## All Findings
 
@@ -34,389 +34,389 @@ Do not raise this PR or merge as-is. The review surfaced 13 High-severity issue(
 - File: `tests/test.py`
 - Location: `lines 1-2`
 
-**Issue:** Test file contains no assertions and no test functions—just a print loop.
+**Issue:** Test file contains only a print loop with no test functions or assertions.
 
-**Reasoning:** This file lives under tests/ but exercises no code under test and asserts nothing, so it cannot detect regressions and gives false confidence that tests exist.
+**Reasoning:** This file lives under tests/ but has zero assertions and tests no behavior; it will not catch regressions and pollutes the test suite with noise.
 
-**Recommendation:** Replace with real pytest/unittest test functions that import the code under test and assert specific behaviors.
-
-### High — Security Agent
-- File: `tests/user_service.py`
-- Location: `DB_PASS / SECRET_KEY constants`
-
-**Issue:** Hardcoded database password and secret key in source code.
-
-**Reasoning:** Credentials committed to source control can be extracted by anyone with repo access and enable direct access to the database and signing/secret operations.
-
-**Recommendation:** Load DB_PASS and SECRET_KEY from environment variables or a secrets manager, and rotate the exposed values immediately.
+**Recommendation:** Replace with actual unit tests using pytest/unittest that exercise UserService methods and assert specific outcomes.
 
 ### High — Security Agent
 - File: `tests/user_service.py`
-- Location: `process() - hashlib.md5(pwd.encode())`
+- Location: `DB_PASS / SECRET_KEY class attributes`
 
-**Issue:** Password is hashed with unsalted MD5.
+**Issue:** Hardcoded credentials and secret key in source code.
 
-**Reasoning:** MD5 is cryptographically broken and unsalted hashes are trivially cracked with rainbow tables, exposing user passwords if the store is compromised.
+**Reasoning:** DB_PASS="admin123" and SECRET_KEY="mysecretkey_do_not_share" are committed to the repo, which leaks credentials to anyone with source access and allows trivial compromise of the database and any signing/encryption that relies on the secret.
 
-**Recommendation:** Use a password-hashing function such as bcrypt, scrypt, or Argon2 with a per-user salt.
+**Recommendation:** Remove the hardcoded values and load them from environment variables or a secrets manager (e.g., os.environ["DB_PASS"]); rotate the exposed credentials immediately.
+
+### High — Security Agent
+- File: `tests/user_service.py`
+- Location: `h = hashlib.md5(pwd.encode())`
+
+**Issue:** Password hashed with MD5, which is cryptographically broken and unsalted.
+
+**Reasoning:** MD5 is fast and collision-prone, and without a salt the hashes are vulnerable to rainbow-table and brute-force attacks, allowing recovery of user passwords if the store is leaked.
+
+**Recommendation:** Use a slow, salted password hash such as bcrypt, scrypt, or argon2 (e.g., bcrypt.hashpw with a per-user salt).
+
+### High — Security Agent
+- File: `tests/user_service.py`
+- Location: `API_URL = "http://internal-api/v1" and requests.post("http://internal-api/...")`
+
+**Issue:** Sensitive traffic sent over plaintext HTTP.
+
+**Reasoning:** User emails, names, and notification payloads are transmitted unencrypted, exposing them to interception or tampering by anyone on the network path between the service and the internal API.
+
+**Recommendation:** Use HTTPS endpoints and validate TLS certificates; configure the base URL from secure config rather than a literal http:// string.
 
 ### High — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `DB_HOST/DB_PASS/SECRET_KEY/API_URL class constants`
+- Location: `lines 23-26 (class attributes)`
 
-**Issue:** Hardcoded credentials and secrets embedded as class constants.
+**Issue:** Credentials and secrets hardcoded as class attributes (DB_PASS, SECRET_KEY, DB_HOST).
 
-**Reasoning:** Storing passwords, secret keys, and internal hosts in source code is a maintainability and security hazard, makes rotation impossible, and leaks via version control.
+**Reasoning:** Secrets in source code leak via VCS history and code reviews and cannot be rotated without a redeploy; this is a maintainability and security failure.
 
-**Recommendation:** Load these values from environment variables or a secrets manager, and remove the literals from the file.
-
-### High — Code Quality Agent
-- File: `tests/user_service.py`
-- Location: `process(), requests.post to /email/send`
-
-**Issue:** External HTTP call has no error handling.
-
-**Reasoning:** If the email service is down or slow, an unhandled exception will propagate and the user will not be stored consistently; there is no logging of failure context.
-
-**Recommendation:** Wrap the call in try/except, log the failure with context, and decide whether to fail the request or queue a retry.
+**Recommendation:** Load these values from environment variables or a secrets manager and remove them from source.
 
 ### High — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `get_user()`
+- Location: `process (lines 70-83)`
 
-**Issue:** Bare `except:` swallows all exceptions including KeyboardInterrupt.
+**Issue:** Deeply nested age-group logic with dead/unreachable branches.
 
-**Reasoning:** Bare except hides bugs and prevents Ctrl-C; here only KeyError is expected.
+**Reasoning:** The outer `if a >= 0` makes the inner `if a >= 0` always true and the `else: group = 'unknown'` unreachable; this nesting is confusing and contains dead code.
 
-**Recommendation:** Use `dict.get(email)` or `except KeyError:` specifically.
+**Recommendation:** Flatten the logic with a single guard `if a < 0 or a > 120: return False` followed by linear elif chain to assign `group`.
 
 ### High — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `delete_user()`
+- Location: `process line 87`
 
-**Issue:** Function returns True before the deletion logic runs, leaving dead code.
+**Issue:** Password hashed with MD5.
 
-**Reasoning:** The `if email in self.d` block is unreachable, so delete_user silently does nothing while pretending to succeed.
+**Reasoning:** MD5 is cryptographically broken and unsuitable for password storage; this leaves stored credentials trivially crackable.
 
-**Recommendation:** Remove the premature `return True` and return True only after the deletion completes; return False (or raise) when the email is absent.
+**Recommendation:** Use a password-hashing function such as bcrypt, argon2, or scrypt via `passlib` or `argon2-cffi`.
 
-### High — Performance Agent
+### High — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `process() requests.post to email/send`
+- Location: `get_user (lines 135-139)`
 
-**Issue:** Synchronous outbound HTTP call to the email service on the user-processing hot path with a 30s timeout.
+**Issue:** Bare `except:` swallows all exceptions including KeyboardInterrupt and SystemExit.
 
-**Reasoning:** Every process() call blocks for up to 30 seconds waiting on an internal API, serializing user creation and exposing the caller to remote latency/failures. This will not scale under load.
+**Reasoning:** A bare except hides bugs and prevents the program from being interrupted; only KeyError is expected here.
 
-**Recommendation:** Enqueue the welcome email on a background worker/queue (e.g., Celery, RQ) or use an async HTTP client with a tight timeout and retry/circuit-breaker policy.
+**Recommendation:** Use `self.d.get(email)` or catch `KeyError` specifically.
 
-### High — Performance Agent
+### High — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `send_notifications() loop`
+- Location: `delete_user (lines 155-160)`
 
-**Issue:** Synchronous requests.post inside a per-user loop with no batching or concurrency.
+**Issue:** `return True` placed before the deletion logic makes the actual delete unreachable.
 
-**Reasoning:** For N users this performs N sequential blocking HTTP round-trips; latency grows linearly and a single slow response stalls the rest. Classic N+1-style remote call pattern.
+**Reasoning:** The function silently claims success without performing the operation; this is a clear bug.
 
-**Recommendation:** Batch into a single bulk-notify endpoint, or dispatch concurrently via a thread pool / async client (e.g., httpx.AsyncClient with gather), and add an explicit timeout.
+**Recommendation:** Remove the premature return and return True only after the deletion completes.
 
 ### High — Testing Agent
 - File: `tests/user_service.py`
-- Location: `entire file`
+- Location: `entire file (lines 1-168)`
 
-**Issue:** File named like a test module contains production code (UserService class) and zero test cases.
+**Issue:** Production-style code (UserService class with validation, hashing, HTTP calls) is placed under tests/ but ships with zero accompanying tests.
 
-**Reasoning:** Production code shipped under tests/ has no corresponding tests in this diff, and the misleading location means the test suite will not exercise it. None of process, validate_user_input, get_user, send_notifications, delete_user, or search has any test coverage.
+**Reasoning:** Non-trivial public methods (process, validate_user_input, get_user, send_notifications, delete_user, search) are introduced with no test coverage, so bugs in validation, age grouping, and notification logic cannot be caught.
 
-**Recommendation:** Move UserService to a non-test module (e.g., src/) and add unit tests covering each public method with valid input, invalid input, and edge cases.
-
-### High — Testing Agent
-- File: `tests/user_service.py`
-- Location: `delete_user (~line 150)`
-
-**Issue:** delete_user is shipped with no test, and an unconditional early return makes the deletion code unreachable.
-
-**Reasoning:** A test asserting that get_user returns None after delete_user would have immediately caught the dead code below the return True. Without coverage, the bug ships silently.
-
-**Recommendation:** Add a test that inserts a user, calls delete_user, and asserts both get_user returns None and the user is removed from the internal list.
+**Recommendation:** Move this module out of tests/ into the production package, and add unit tests covering each public method including success, failure, and edge cases.
 
 ### High — Testing Agent
 - File: `tests/user_service.py`
-- Location: `process (~line 86)`
+- Location: `process() around the requests.post call`
 
-**Issue:** process performs an outbound HTTP POST with no test isolation or coverage.
+**Issue:** process() makes a real outbound HTTP call to http://internal-api/v1/email/send with no test isolation or dependency injection.
 
-**Reasoning:** Any test that calls process would hit a real internal API, and there is no test that mocks requests.post to verify the call shape or that failures are handled. New behavior with a network side effect is shipping untested.
+**Reasoning:** Any future test of process() will hit the network unless the requests dependency is mockable; this is a testability defect introduced with the new behavior.
 
-**Recommendation:** Add tests that patch requests.post and assert the call arguments, plus a negative test covering network failure (timeout/connection error).
+**Recommendation:** Inject an HTTP client / email sender, and add tests that assert the call is made with expected payload using a mock.
 
 ### High — Testing Agent
 - File: `tests/user_service.py`
-- Location: `send_notifications (~line 135)`
+- Location: `delete_user (returns True before the delete block)`
 
-**Issue:** send_notifications has deeply nested conditionals and no tests.
+**Issue:** delete_user returns True unconditionally; the deletion code below the return is unreachable, and there are no tests asserting users are actually removed.
 
-**Reasoning:** The five-level nested branch (not None, has email, group==adult, age>21, active) has many paths that silently skip notification; without tests, regressions in any predicate are invisible.
+**Reasoning:** A test that only checks the return value would pass while the bug silently persists user data — the absence of behavior-checking tests actively hides this defect.
 
-**Recommendation:** Add parametrized tests covering each filter branch (None user, missing email, non-adult group, age<=21, inactive) plus the happy path with a mocked requests.post.
+**Recommendation:** Add tests that call delete_user then assert the user is gone from self.d and self.u; the test would expose the unreachable code.
+
+### High — Testing Agent
+- File: `tests/user_service.py`
+- Location: `search() return values`
+
+**Issue:** search() has inconsistent return types (None, False, list) with no tests pinning the contract.
+
+**Reasoning:** Without tests, callers cannot rely on the return shape and future refactors will silently change behavior; this is a public API shipped with no coverage.
+
+**Recommendation:** Decide on a single return contract (e.g., always a list) and add tests covering empty query, no matches, and one-or-more matches.
 
 ### Medium — Security Agent
 - File: `tests/user_service.py`
-- Location: `process() - print("[LOG]", log_line)`
+- Location: `print("[LOG]", log_line) in process()`
 
-**Issue:** Sensitive user data including email and password hash is written to logs.
+**Issue:** Sensitive user data and password hash written to logs.
 
-**Reasoning:** Logging PII and credential-derived material can violate privacy requirements and aids attackers who gain access to log storage.
+**Reasoning:** The log line concatenates every user field including email (PII) and pwd_hash; logs are commonly aggregated and retained, broadening exposure of credentials and personal data.
 
-**Recommendation:** Redact PII and never log password hashes; log only non-sensitive identifiers.
-
-### Medium — Security Agent
-- File: `tests/user_service.py`
-- Location: `API_URL = "http://internal-api/v1" and requests.post calls`
-
-**Issue:** Outbound HTTP calls use plaintext http:// instead of https://.
-
-**Reasoning:** User email addresses and notification payloads are sent unencrypted, allowing interception or tampering on the network path.
-
-**Recommendation:** Use HTTPS endpoints and verify TLS certificates.
+**Recommendation:** Remove pwd_hash and PII from log output; log only non-sensitive identifiers and use a structured logger with appropriate redaction.
 
 ### Medium — Security Agent
 - File: `tests/user_service.py`
-- Location: `process() - email validation loop`
+- Location: `delete_user method`
 
-**Issue:** Email validation only checks for an '@' character.
+**Issue:** delete_user returns True without performing the deletion (dead code after return).
 
-**Reasoning:** Weak validation allows malformed or malicious inputs (e.g., header injection, oversized values) to reach downstream systems like the email-send endpoint.
+**Reasoning:** The function unconditionally returns True before the deletion logic runs, so callers believe the user was deleted while the record persists — a security-relevant failure for account removal / GDPR erasure requests.
 
-**Recommendation:** Validate emails with a proper regex or library and enforce maximum length, then reject inputs that fail.
+**Recommendation:** Remove the early `return True` so the deletion logic executes, and return success only after the user is actually removed.
 
 ### Medium — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `module-level constants MAX/WAIT/SZ and instance attrs self.u/self.d/self.tmp`
+- Location: `imports (lines 3-10)`
 
-**Issue:** Identifiers are single- or two-letter abbreviations with no clear meaning.
+**Issue:** Unused imports: os, json, datetime, re, csv.
 
-**Reasoning:** Names like MAX, SZ, u, d, tmp, n, e, a force readers to infer intent and hurt maintainability; some constants are also unused.
-
-**Recommendation:** Rename to descriptive identifiers (e.g. MAX_USERS, REQUEST_TIMEOUT_SECONDS, self.users, self.users_by_email) and delete unused constants.
-
-### Medium — Code Quality Agent
-- File: `tests/user_service.py`
-- Location: `imports block`
-
-**Issue:** Unused imports (os, json, datetime, re, csv).
-
-**Reasoning:** Dead imports add noise, slow startup, and obscure what the module actually depends on.
+**Reasoning:** Dead imports clutter the module, slow startup slightly, and mislead readers about dependencies.
 
 **Recommendation:** Remove imports that are not referenced anywhere in the module.
 
 ### Medium — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `process()`
+- Location: `lines 13-15`
 
-**Issue:** process() mixes validation, persistence, hashing, HTTP, and logging in one long method.
+**Issue:** Module constants MAX, WAIT, SZ have meaningless names and shadow the builtin max.
 
-**Reasoning:** Mixed responsibilities make the method hard to test and reuse; validation logic is also duplicated in validate_user_input().
+**Reasoning:** Single-letter or abbreviated constant names give no context, and MAX shadows the built-in `max` function when star-imported, hurting readability.
 
-**Recommendation:** Extract _validate(), _hash_password(), _send_welcome_email(), and _log_user() helpers and have process() orchestrate them; reuse validate_user_input() instead of duplicating checks.
-
-### Medium — Code Quality Agent
-- File: `tests/user_service.py`
-- Location: `process(), age branching`
-
-**Issue:** Deeply nested age-group branching with redundant and unreachable conditions.
-
-**Reasoning:** The `if a >= 0` check is repeated inside the outer `if a >= 0`, and the `else: group = 'unknown'` branch is unreachable; this is confusing and likely buggy.
-
-**Recommendation:** Flatten with early returns and a single if/elif chain on age, removing the duplicate guard.
+**Recommendation:** Rename to descriptive names such as MAX_USERS, REQUEST_TIMEOUT_SECONDS, BUFFER_SIZE — or remove if unused.
 
 ### Medium — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `process(), email '@' check`
+- Location: `__init__ (lines 28-31)`
 
-**Issue:** Manual character loop to detect '@' in email.
+**Issue:** Instance attributes named u, d, tmp are unclear single-letter names.
 
-**Reasoning:** Looping to check for a substring is harder to read and slower than a built-in containment check.
+**Reasoning:** Cryptic identifiers force readers to chase usage to infer meaning; this hurts maintainability for any non-trivial method.
+
+**Recommendation:** Rename to users (list), users_by_email (dict), and remove tmp if unused.
+
+### Medium — Code Quality Agent
+- File: `tests/user_service.py`
+- Location: `process (lines 33-50)`
+
+**Issue:** Type check uses `type(data) != dict` and chained one-key membership checks instead of idiomatic constructs.
+
+**Reasoning:** `type(x) != dict` rejects valid subclasses and is non-idiomatic; the repeated `if 'x' not in data` blocks duplicate logic.
+
+**Recommendation:** Use `isinstance(data, dict)` and validate required keys with a single `required = {'name','email','age'}; if not required <= data.keys(): return False`.
+
+### Medium — Code Quality Agent
+- File: `tests/user_service.py`
+- Location: `process (lines 56-60)`
+
+**Issue:** Manual loop to detect '@' in email instead of using `in` operator.
+
+**Reasoning:** Iterating character-by-character to check substring presence misuses the language idiom and is less readable than `'@' in e`.
 
 **Recommendation:** Replace the loop with `if '@' not in e: return False`.
 
 ### Medium — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `process(), `if type(data) != dict``
+- Location: `process (lines 95-99)`
 
-**Issue:** Uses `type(x) != dict` instead of isinstance().
+**Issue:** External HTTP call inside process() with no error handling.
 
-**Reasoning:** `type(...) !=` rejects valid dict subclasses and is non-idiomatic Python.
+**Reasoning:** A failed/slow email request will raise and abort the entire user-creation flow; there is no try/except, retry, or logging.
 
-**Recommendation:** Use `if not isinstance(data, dict): return False`.
-
-### Medium — Code Quality Agent
-- File: `tests/user_service.py`
-- Location: `send_notifications()`
-
-**Issue:** Five levels of nested `if` checks.
-
-**Reasoning:** Deep nesting harms readability and makes branch coverage difficult; each guard could be a single combined condition with early `continue`.
-
-**Recommendation:** Use `continue` for each guard or combine the conditions into one expression to flatten the loop body.
+**Recommendation:** Wrap the request in try/except, log failures, and consider decoupling notification dispatch from the validation/persistence path.
 
 ### Medium — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `send_notifications()`
+- Location: `validate_user_input (lines 109-132)`
+
+**Issue:** validate_user_input duplicates validation logic already in process().
+
+**Reasoning:** Two copies of the same validation will drift; a bug fixed in one place will linger in the other.
+
+**Recommendation:** Extract a single private `_validate(data)` helper and call it from both sites.
+
+### Medium — Code Quality Agent
+- File: `tests/user_service.py`
+- Location: `send_notifications (lines 142-152)`
+
+**Issue:** Five levels of nested `if` guards before the action.
+
+**Reasoning:** Deep nesting makes the control flow hard to follow and is easily flattened with early `continue`s.
+
+**Recommendation:** Use guard clauses with `continue` to skip invalid users, leaving the notification call at one level of indentation.
+
+### Medium — Code Quality Agent
+- File: `tests/user_service.py`
+- Location: `send_notifications (lines 148-151)`
 
 **Issue:** HTTP POST has no timeout and no error handling.
 
-**Reasoning:** A missing timeout on `requests.post` can hang indefinitely, and uncaught exceptions will abort the entire notification batch.
+**Reasoning:** Without a timeout, a hung remote endpoint will block the loop indefinitely; without try/except, one failure aborts all remaining notifications.
 
-**Recommendation:** Pass an explicit `timeout=` and wrap each call in try/except, logging failures and continuing with the next user.
+**Recommendation:** Pass `timeout=...` and wrap the call in try/except so one failure does not abort the batch.
 
 ### Medium — Code Quality Agent
 - File: `tests/user_service.py`
+- Location: `search (lines 163-171)`
+
+**Issue:** search() has inconsistent return types: None, False, or list.
+
+**Reasoning:** Callers cannot reliably distinguish empty results from invalid input; mixed return types are a leaky API.
+
+**Recommendation:** Always return a list (empty list when there are no matches) and raise/return early for invalid input consistently.
+
+### Medium — Performance Agent
+- File: `tests/user_service.py`
+- Location: `send_notifications loop`
+
+**Issue:** Synchronous HTTP POST inside a per-user loop with no batching or async I/O.
+
+**Reasoning:** Each iteration makes a blocking network call; for N users this scales linearly with network latency and will dominate runtime under any real load.
+
+**Recommendation:** Batch notifications into a single API call if supported, or issue requests concurrently via a thread pool / async client (e.g. httpx.AsyncClient, concurrent.futures).
+
+### Medium — Performance Agent
+- File: `tests/user_service.py`
+- Location: `process() log_line construction`
+
+**Issue:** String concatenation in a loop builds the log line via repeated '+' creating new string objects each iteration.
+
+**Reasoning:** Repeated string concatenation is O(n^2) in CPython for growing strings; while small here, it is a textbook tight-loop allocation pattern that scales badly when user dicts grow.
+
+**Recommendation:** Use ' '.join(f'{k}={v}' for k, v in user.items()) or build a list and join once.
+
+### Medium — Performance Agent
+- File: `tests/user_service.py`
+- Location: `process() email '@' check and validate_user_input() same check`
+
+**Issue:** Manual character-by-character loop to detect '@' in the email instead of using the 'in' operator.
+
+**Reasoning:** Iterating every character in Python-level loop is slower than the built-in containment check, and the pattern is duplicated in two methods so the cost compounds.
+
+**Recommendation:** Replace the for/if loop with `if '@' not in e: return False`.
+
+### Medium — Performance Agent
+- File: `tests/user_service.py`
 - Location: `search()`
 
-**Issue:** Inconsistent return types (None, False, or list).
+**Issue:** Linear scan over self.u for every query with no index.
 
-**Reasoning:** Callers must handle three different sentinel types, which is error-prone and a leaky API.
+**Reasoning:** search() does an O(n) substring scan across the full user list on each call; with growth in users or query rate this becomes the hot path bottleneck, especially since self.d already keys users by email.
 
-**Recommendation:** Always return a list (empty when no match) and document the contract.
-
-### Medium — Performance Agent
-- File: `tests/user_service.py`
-- Location: `process() email '@' check loop`
-
-**Issue:** Manual character-by-character loop to detect '@' instead of using 'in' operator.
-
-**Reasoning:** Iterating each character in Python is significantly slower than the built-in containment check, and the loop does not short-circuit when '@' is found. Same pattern is duplicated in validate_user_input().
-
-**Recommendation:** Replace the loop with `ok = '@' in e` (or a proper email validation regex) so the check short-circuits and runs in optimized C.
+**Recommendation:** Maintain an auxiliary index (e.g. name->users dict or a prefix/trigram index) or at minimum short-circuit using generator + any(), and consider paginating results.
 
 ### Medium — Performance Agent
 - File: `tests/user_service.py`
-- Location: `process() log_line construction loop`
+- Location: `process() requests.post welcome email`
 
-**Issue:** String concatenation inside a loop builds the log line via repeated '+' allocations.
+**Issue:** Synchronous outbound HTTP call on the user-creation hot path with a 30s timeout.
 
-**Reasoning:** Each concatenation allocates a new string, causing O(n^2) behavior as the dict grows; this is a classic tight-loop allocation anti-pattern.
+**Reasoning:** Every process() call blocks up to 30 seconds waiting on the email service, serializing user ingestion behind an external dependency.
 
-**Recommendation:** Build the log with `' '.join(f'{k}={v}' for k, v in user.items())` or use an f-string / list-append + join.
-
-### Medium — Performance Agent
-- File: `tests/user_service.py`
-- Location: `search() over self.u`
-
-**Issue:** Linear scan over the user list for every search and only uses substring match on name.
-
-**Reasoning:** self.d is already an email-keyed dict but is unused here; searches are O(n) per call and will degrade as the user list grows. No pagination/limit on results either.
-
-**Recommendation:** Index users by the searchable fields (e.g., maintain name/prefix indexes) or push search to a datastore; at minimum cap result size and break early once the limit is hit.
+**Recommendation:** Enqueue the welcome email to a background worker/queue or use an async HTTP client so request handling is not blocked by the email service.
 
 ### Medium — Testing Agent
 - File: `tests/user_service.py`
-- Location: `process age handling (~lines 60-75)`
+- Location: `process() age branches`
 
-**Issue:** Age-group classification has multiple boundary values and no tests.
+**Issue:** Age-group branching (child/teen/adult/senior, >120 reject, negative reject) has many boundary values but no tests.
 
-**Reasoning:** Boundaries at 0, 13, 18, 65, 120 plus the negative-age and >120 rejection paths are exactly the cases unit tests should pin down; without them, off-by-one regressions go unnoticed.
+**Reasoning:** Boundary conditions at 0, 12, 13, 17, 18, 64, 65, 120, 121, and negative values are exactly the kind of edge cases that regress silently without explicit tests.
 
-**Recommendation:** Add parametrized tests for ages -1, 0, 12, 13, 17, 18, 64, 65, 120, 121 asserting both the returned bool and the resulting group.
-
-### Medium — Testing Agent
-- File: `tests/user_service.py`
-- Location: `search (~line 160)`
-
-**Issue:** search has an inconsistent return contract (None, False, or list) and no tests.
-
-**Reasoning:** Returning None for empty query, False for no matches, and a list for matches is a brittle API; tests would force the contract to be made explicit and catch callers that assume a list.
-
-**Recommendation:** Add tests for empty query, no-match query, and matching query, and decide on a single return type (e.g., always a list).
+**Recommendation:** Add parametrized tests asserting the group/return value at each boundary.
 
 ### Medium — Testing Agent
 - File: `tests/user_service.py`
-- Location: `get_user (~line 128)`
+- Location: `get_user()`
 
-**Issue:** get_user uses bare except and has no test for the missing-key path.
+**Issue:** get_user uses bare except and returns None, but no test verifies the missing-key path or that unexpected exceptions are not swallowed.
 
-**Reasoning:** A test asserting get_user returns None for an unknown email would document the intended fallback; the bare except also swallows unrelated errors silently.
+**Reasoning:** A bare except can hide real bugs; absent negative-path tests, the contract for unknown emails is unverified.
 
-**Recommendation:** Add tests for both a known and an unknown email, and replace the bare except with except KeyError.
+**Recommendation:** Add tests for get_user with an unknown email (expect None) and a known email (expect the stored dict).
 
 ### Medium — Testing Agent
 - File: `tests/user_service.py`
-- Location: `process validation (~lines 32-58)`
+- Location: `send_notifications() deeply nested conditions`
 
-**Issue:** Validation paths (None, non-dict, missing keys, empty/short/long name, missing '@') have no tests.
+**Issue:** send_notifications has five nested guards (None, email, group=='adult', age>21, active) with no tests for any branch.
 
-**Reasoning:** Each early-return branch is a negative path that should be pinned by a test; without them, loosening validation accidentally would not be detected.
+**Reasoning:** Each guard is a place a notification can be silently skipped; without negative-path tests these regressions are invisible.
 
-**Recommendation:** Add parametrized negative tests covering each rejection branch and assert process returns False without mutating internal state.
+**Recommendation:** Add tests with a mocked HTTP client for each filtered-out case and at least one happy-path case asserting the POST is made.
+
+### Medium — Testing Agent
+- File: `tests/user_service.py`
+- Location: `validate_user_input()`
+
+**Issue:** New public validator method has no tests for its negative paths (None, non-dict, missing keys, short/long name, missing @).
+
+**Reasoning:** Validators are exactly where edge-case tests pay off; shipping one without tests guarantees future drift between process() and validate_user_input() duplicating the same rules.
+
+**Recommendation:** Add unit tests for each rejection condition and at least one accept case.
 
 ### Low — Code Quality Agent
 - File: `tests/test.py`
 - Location: `lines 1-2`
 
-**Issue:** File contains only a debug print loop with no test logic.
+**Issue:** Test file contains only a print loop with no assertions or test framework usage.
 
-**Reasoning:** A file under tests/ that only prints in a loop adds noise, has no assertions, and is likely leftover scratch code.
+**Reasoning:** A file under tests/ should exercise behavior with assertions; a bare print loop is dead scaffolding that adds noise to the test suite.
 
-**Recommendation:** Remove the file or replace it with an actual test using a framework like pytest.
+**Recommendation:** Either delete the file or replace it with an actual unittest/pytest test that asserts behavior.
+
+### Low — Code Quality Agent
+- File: `tests/test.py`
+- Location: `end of file`
+
+**Issue:** Missing trailing newline at end of file.
+
+**Reasoning:** Files without a trailing newline can cause issues with some tools and diff readability.
+
+**Recommendation:** Add a newline at the end of the file.
 
 ### Low — Security Agent
 - File: `tests/user_service.py`
-- Location: `get_user() - bare except`
+- Location: `get_user: except: return None`
 
-**Issue:** Bare except swallows all exceptions including unexpected errors.
+**Issue:** Bare except swallows all exceptions including KeyboardInterrupt/SystemExit.
 
-**Reasoning:** Hiding errors can mask security-relevant failures and make incident triage harder.
+**Reasoning:** Catching everything can hide unexpected errors (including security-relevant failures) and complicates incident response.
 
-**Recommendation:** Catch KeyError specifically, or use self.d.get(email).
-
-### Low — Security Agent
-- File: `tests/user_service.py`
-- Location: `search() - 'if q in u["name"]'`
-
-**Issue:** Search input is used without length or character validation.
-
-**Reasoning:** Unbounded user-supplied query strings against in-memory data are low risk here, but at trust boundaries they should be normalized and length-limited to prevent abuse.
-
-**Recommendation:** Enforce a maximum length and sanitize the query before matching.
+**Recommendation:** Catch only KeyError, or use `self.d.get(email)` instead of try/except.
 
 ### Low — Code Quality Agent
 - File: `tests/user_service.py`
-- Location: `process(), log_line concatenation`
+- Location: `process (lines 102-104)`
 
-**Issue:** String concatenation in a loop instead of using join/format.
+**Issue:** Log line built via string concatenation in a loop and emitted with print.
 
-**Reasoning:** Repeated `+=` on strings is non-idiomatic and harder to read.
+**Reasoning:** Repeated `log_line = log_line + ...` is O(n²) in Python and `print` is not appropriate for service logging.
 
-**Recommendation:** Build the log line with `' '.join(f'{k}={v}' for k, v in user.items())`.
-
-### Low — Code Quality Agent
-- File: `tests/user_service.py`
-- Location: `process() and validate_user_input()`
-
-**Issue:** Validation logic is duplicated across two methods.
-
-**Reasoning:** Two copies of the same checks will drift apart over time and double the maintenance cost.
-
-**Recommendation:** Have process() call validate_user_input() (or a shared private helper) instead of repeating the checks.
-
-### Low — Code Quality Agent
-- File: `tests/user_service.py`
-- Location: `process(), `pwd_hash` stored alongside user`
-
-**Issue:** TODO-style inline comment `# Issue 11: MD5 is insecure` left in code.
-
-**Reasoning:** Production code should not carry numbered review comments; either fix the issue or track it externally.
-
-**Recommendation:** Replace MD5 with a proper password hash (e.g. bcrypt/argon2) and remove the comment.
+**Recommendation:** Use `' '.join(f'{k}={v}' for k,v in user.items())` and a `logging` logger instead of print.
 
 ### Low — Performance Agent
 - File: `tests/user_service.py`
-- Location: `process() self.u.append + self.d[e] = user`
+- Location: `delete_user()`
 
-**Issue:** Parallel list and dict storage of the same user objects with no dedup check.
+**Issue:** List comprehension rebuilds self.u to remove a single entry (dead code after early return, but the pattern itself is wasteful).
 
-**Reasoning:** Re-processing the same email appends duplicates to self.u while overwriting self.d, causing unbounded list growth and divergent state that slows later linear scans (e.g., search()).
+**Reasoning:** Rebuilding the entire list to drop one element is O(n) allocation; for large user sets this is unnecessary churn.
 
-**Recommendation:** Check `if e in self.d` before appending, or drop self.u and iterate self.d.values() when a sequence is needed.
+**Recommendation:** Track users in a dict keyed by email as the source of truth (self.d already exists) and avoid the parallel list, or remove in place.
 
