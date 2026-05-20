@@ -2,10 +2,12 @@ from pathlib import Path
 
 import click
 
-from pr_sentinel import git_diff, diff_parser
+from pr_sentinel import git_diff, diff_parser, report_generator
+from pr_sentinel.agents import AGENT_REGISTRY
+from pr_sentinel.chunker import DEFAULT_CHUNK_BUDGET
 
 DEFAULT_AGENTS = ["security", "quality", "performance", "testing"]
-VALID_AGENTS = {"security", "quality", "performance", "testing"}
+VALID_AGENTS = set(DEFAULT_AGENTS)
 VALID_FORMATS = {"json", "markdown", "both"}
 
 
@@ -63,6 +65,13 @@ def main() -> None:
     show_default=True,
     help="Per-file diff size cap (chars). Larger files are truncated.",
 )
+@click.option(
+    "--chunk-budget",
+    type=int,
+    default=DEFAULT_CHUNK_BUDGET,
+    show_default=True,
+    help="Max combined diff chars per Claude call before chunking.",
+)
 def review(
     base: str,
     diff_path: Path | None,
@@ -71,6 +80,7 @@ def review(
     out_dir: Path,
     out_format: str,
     max_file_size: int,
+    chunk_budget: int,
 ) -> None:
     """Review changes and write a structured report."""
     agent_list = _parse_agents(agents)
@@ -91,19 +101,61 @@ def review(
     files = diff_parser.parse(raw_diff, max_file_size=max_file_size)
 
     click.echo(f"Source: {source}")
-    click.echo(f"Agents: {', '.join(agent_list)}")
     click.echo(f"Files after filter: {len(files)}")
     for f in files:
-        click.echo(f"  {f['changeType']:8} {f['filePath']}  (+{f['addedLines']}/-{f['removedLines']})")
-    click.echo(f"Output dir: {out_dir} (format={out_format})")
-    click.echo("[phase 1 stub] agent execution + report generation not yet wired.")
+        click.echo(
+            f"  {f['changeType']:8} {f['filePath']}  "
+            f"(+{f['addedLines']}/-{f['removedLines']})"
+        )
+
+    if not files:
+        click.echo("No reviewable files. Exiting.")
+        return
+
+    available = [a for a in agent_list if a in AGENT_REGISTRY]
+    skipped = [a for a in agent_list if a not in AGENT_REGISTRY]
+    if skipped:
+        click.echo(f"Skipping unimplemented agents: {', '.join(skipped)}")
+    if not available:
+        raise click.UsageError(
+            "None of the requested agents are implemented yet. "
+            f"Available: {', '.join(sorted(AGENT_REGISTRY))}"
+        )
+
+    agent_results: list[dict] = []
+    for agent_key in available:
+        agent_cls = AGENT_REGISTRY[agent_key]
+        agent = agent_cls()
+        click.echo(f"Running {agent.display_name}...")
+        result = agent.run(files, chunk_budget=chunk_budget)
+        click.echo(f"  {len(result['findings'])} finding(s)")
+        agent_results.append(result)
+
+    report = report_generator.build_report(
+        agent_results=agent_results,
+        base_branch=base,
+        source=source,
+    )
+
+    written: list[Path] = []
+    if out_format in ("json", "both"):
+        written.append(report_generator.write_json(report, out_dir))
+    if out_format in ("markdown", "both"):
+        written.append(report_generator.write_markdown(report, out_dir))
+
+    click.echo("")
+    click.echo(f"Risk Level: {report['riskLevel']}")
+    click.echo(report["summary"])
+    for p in written:
+        click.echo(f"Wrote: {p}")
 
 
 @main.command(name="agents")
 def list_agents() -> None:
     """List available review agents."""
     for a in sorted(VALID_AGENTS):
-        click.echo(a)
+        status = "ready" if a in AGENT_REGISTRY else "not implemented"
+        click.echo(f"{a:12} [{status}]")
 
 
 if __name__ == "__main__":
