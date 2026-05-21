@@ -7,6 +7,7 @@ import click
 from pr_sentinel import chunker, git_diff, diff_parser, orchestrator, report_generator
 from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel.chunker import DEFAULT_CHUNK_BUDGET
+from pr_sentinel.orchestrator import DEFAULT_MAX_PARALLEL
 
 DEFAULT_AGENTS = ["security", "quality", "performance", "testing"]
 VALID_AGENTS = set(DEFAULT_AGENTS)
@@ -119,6 +120,17 @@ def main() -> None:
         "Forwarded to `claude --model`. Default: Claude Code's configured model."
     ),
 )
+@click.option(
+    "--max-parallel",
+    type=click.IntRange(min=1),
+    default=DEFAULT_MAX_PARALLEL,
+    show_default=True,
+    help=(
+        "Max concurrent claude calls across all (agent, chunk) pairs. "
+        "Default 8 covers 1-2 chunk runs fully and gives ~2x speedup on large diffs. "
+        "Lower (4-6) if you're rate-limited; higher (12-16) on CI boxes with headroom."
+    ),
+)
 def review(
     base: str,
     diff_path: Path | None,
@@ -130,6 +142,7 @@ def review(
     max_file_size: int,
     chunk_budget: int,
     model: str | None,
+    max_parallel: int,
 ) -> None:
     """Review changes and write a structured report."""
     agent_list = _parse_agents(agents)
@@ -225,11 +238,11 @@ def review(
 
     agent_results = orchestrator.run_agents(
         agent_keys=available,
-        files=files,
-        chunk_budget=chunk_budget,
+        chunks=chunks,
         on_finish=_on_finish,
         on_chunk_done=_on_chunk_done,
         model=model,
+        max_parallel=max_parallel,
     )
 
     click.echo("")

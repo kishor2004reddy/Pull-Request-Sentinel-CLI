@@ -1,5 +1,4 @@
 from importlib import resources
-from typing import Callable
 
 from pr_sentinel import chunker, claude_runner
 
@@ -20,29 +19,16 @@ class BaseAgent:
             raise ValueError(f"{type(self).__name__} missing prompt_file")
         self._template = load_prompt(self.prompt_file)
 
-    def run(
-        self,
-        files: list[dict],
-        chunk_budget: int,
-        on_chunk_done: Callable[[str, int, int], None] | None = None,
-        model: str | None = None,
-    ) -> dict:
-        if not files:
-            return {"agent": self.display_name, "findings": []}
+    def process_chunk(self, chunk: list[dict], model: str | None = None) -> list[dict]:
+        """Process a single chunk and return validated findings.
 
-        chunks = chunker.chunk_files(files, budget=chunk_budget)
-        total = len(chunks)
-        all_findings: list[dict] = []
-
-        for idx, chunk in enumerate(chunks, start=1):
-            diff_block = chunker.format_diff_block(chunk)
-            prompt = self._template.replace("<<<DIFF>>>", diff_block)
-            response = claude_runner.run_json(prompt, model=model)
-            all_findings.extend(self._validate_findings(response))
-            if on_chunk_done:
-                on_chunk_done(self.display_name, idx, total)
-
-        return {"agent": self.display_name, "findings": all_findings}
+        Raises on subprocess failure or unparseable output (after retry); caller
+        decides whether to discard partial findings for the agent.
+        """
+        diff_block = chunker.format_diff_block(chunk)
+        prompt = self._template.replace("<<<DIFF>>>", diff_block)
+        response = claude_runner.run_json(prompt, model=model)
+        return self._validate_findings(response)
 
     def _validate_findings(self, response: dict) -> list[dict]:
         findings = response.get("findings", [])
