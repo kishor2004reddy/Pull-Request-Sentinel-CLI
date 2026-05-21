@@ -19,7 +19,12 @@ class BaseAgent:
             raise ValueError(f"{type(self).__name__} missing prompt_file")
         self._template = load_prompt(self.prompt_file)
 
-    def process_chunk(self, chunk: list[dict], model: str | None = None) -> list[dict]:
+    def process_chunk(
+        self,
+        chunk: list[dict],
+        model: str | None = None,
+        timeout: int = 600,
+    ) -> list[dict]:
         """Process a single chunk and return validated findings.
 
         Raises on subprocess failure or unparseable output (after retry); caller
@@ -27,7 +32,7 @@ class BaseAgent:
         """
         diff_block = chunker.format_diff_block(chunk)
         prompt = self._template.replace("<<<DIFF>>>", diff_block)
-        response = claude_runner.run_json(prompt, model=model)
+        response = claude_runner.run_json(prompt, timeout=timeout, model=model)
         return self._validate_findings(response)
 
     def _validate_findings(self, response: dict) -> list[dict]:

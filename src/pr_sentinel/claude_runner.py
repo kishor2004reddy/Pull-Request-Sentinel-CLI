@@ -71,7 +71,7 @@ def _extract_json(text: str) -> dict:
     raise ValueError("no JSON object found in output")
 
 
-def run_json(prompt: str, timeout: int = 180, model: str | None = None) -> dict:
+def run_json(prompt: str, timeout: int = 600, model: str | None = None) -> dict:
     """Invoke `claude -p` and return parsed JSON. Retries once on parse failure."""
     raw = _invoke(prompt, timeout, model)
     try:

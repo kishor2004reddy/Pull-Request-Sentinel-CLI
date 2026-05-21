@@ -7,7 +7,7 @@ import click
 from pr_sentinel import chunker, git_diff, diff_parser, orchestrator, report_generator
 from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel.chunker import DEFAULT_CHUNK_BUDGET
-from pr_sentinel.orchestrator import DEFAULT_MAX_PARALLEL
+from pr_sentinel.orchestrator import DEFAULT_MAX_PARALLEL, DEFAULT_TIMEOUT
 
 DEFAULT_AGENTS = ["security", "quality", "performance", "testing"]
 VALID_AGENTS = set(DEFAULT_AGENTS)
@@ -131,6 +131,17 @@ def main() -> None:
         "Lower (4-6) if you're rate-limited; higher (12-16) on CI boxes with headroom."
     ),
 )
+@click.option(
+    "--timeout",
+    type=click.IntRange(min=1),
+    default=DEFAULT_TIMEOUT,
+    show_default=True,
+    help=(
+        "Per-call timeout in seconds for each claude subprocess. "
+        "Default 600 (10 min) is generous; lower for fail-fast CI runs, "
+        "raise if you see timeouts with opus on large chunks."
+    ),
+)
 def review(
     base: str,
     diff_path: Path | None,
@@ -143,6 +154,7 @@ def review(
     chunk_budget: int,
     model: str | None,
     max_parallel: int,
+    timeout: int,
 ) -> None:
     """Review changes and write a structured report."""
     agent_list = _parse_agents(agents)
@@ -243,6 +255,7 @@ def review(
         on_chunk_done=_on_chunk_done,
         model=model,
         max_parallel=max_parallel,
+        timeout=timeout,
     )
 
     click.echo("")

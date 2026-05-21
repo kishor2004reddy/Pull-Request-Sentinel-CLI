@@ -4,6 +4,7 @@ from typing import Callable
 from pr_sentinel.agents import AGENT_REGISTRY
 
 DEFAULT_MAX_PARALLEL = 8
+DEFAULT_TIMEOUT = 600
 
 
 def run_agents(
@@ -14,6 +15,7 @@ def run_agents(
     on_chunk_done: Callable[[str, int, int], None] | None = None,
     max_parallel: int = DEFAULT_MAX_PARALLEL,
     model: str | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
 ) -> list[dict]:
     """Run all (agent, chunk) tasks in parallel under a single bounded pool.
 
@@ -55,7 +57,7 @@ def run_agents(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         future_to_meta = {}
         for k, idx, chunk in tasks:
-            future = pool.submit(instances[k].process_chunk, chunk, model)
+            future = pool.submit(instances[k].process_chunk, chunk, model, timeout)
             future_to_meta[future] = (k, idx)
 
         for future in as_completed(future_to_meta):
