@@ -1,4 +1,5 @@
 import fnmatch
+import posixpath
 import re
 
 NOISE_PATTERNS = [
@@ -23,6 +24,7 @@ NOISE_PATTERNS = [
     "*/build/*",
     "node_modules/*",
     "*/node_modules/*",
+    "*/__pycache__/*",
 ]
 
 _DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
@@ -31,7 +33,11 @@ _TRUNCATION_NOTE = "\n\n[... diff truncated by pr-sentinel: exceeded --max-file-
 
 def _is_noise(path: str) -> bool:
     norm = path.replace("\\", "/")
-    return any(fnmatch.fnmatch(norm, pat) for pat in NOISE_PATTERNS)
+    name = posixpath.basename(norm)
+    return any(
+        fnmatch.fnmatch(norm, pat) or fnmatch.fnmatch(name, pat)
+        for pat in NOISE_PATTERNS
+    )
 
 
 def _classify(chunk: str) -> str:

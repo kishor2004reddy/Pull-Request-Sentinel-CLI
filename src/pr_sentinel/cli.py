@@ -53,6 +53,16 @@ def main() -> None:
 @main.command()
 @click.option("--base", default="main", help="Base branch to diff against.")
 @click.option(
+    "--head",
+    default="HEAD",
+    show_default=True,
+    help=(
+        "Source branch/ref to review. Defaults to HEAD (currently checked-out branch). "
+        "Use with --base to diff arbitrary refs without checking them out, "
+        "e.g. --base main --head feature/foo or --base release/2024 --head release/2025."
+    ),
+)
+@click.option(
     "--diff",
     "diff_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -144,6 +154,7 @@ def main() -> None:
 )
 def review(
     base: str,
+    head: str,
     diff_path: Path | None,
     staged: bool,
     repo_dir: Path | None,
@@ -169,8 +180,18 @@ def review(
         raw_diff = git_diff.get_staged_diff(cwd=repo_dir)
         source = f"staged@{repo_dir}" if repo_dir else "staged"
     else:
-        raw_diff = git_diff.get_branch_diff(base, cwd=repo_dir)
-        source = f"branch:{base}@{repo_dir}" if repo_dir else f"branch:{base}"
+        display_head = head
+        if head == "HEAD":
+            try:
+                current = git_diff.get_current_branch(cwd=repo_dir).strip()
+                if current:
+                    display_head = current
+            except Exception:
+                pass
+        raw_diff = git_diff.get_branch_diff(base, head=head, cwd=repo_dir)
+        repo_suffix = f"@{repo_dir}" if repo_dir else ""
+        source = f"branch:{base}...{display_head}{repo_suffix}"
+        click.echo(f"Comparing: {display_head} -> {base}" + (f" in {repo_dir}" if repo_dir else ""))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     diff_save_path = out_dir / "source.diff"

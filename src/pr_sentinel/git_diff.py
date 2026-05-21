@@ -50,11 +50,16 @@ def get_current_branch(cwd: Path | None = None) -> str:
     return _run(["git", "branch", "--show-current"], cwd=cwd).strip()
 
 
-def get_branch_diff(base: str, unified: int = 80, cwd: Path | None = None) -> str:
+def get_branch_diff(
+    base: str,
+    head: str = "HEAD",
+    unified: int = 20,
+    cwd: Path | None = None,
+) -> str:
     _ensure_repo(cwd)
-    return _run(["git", "diff", f"--unified={unified}", f"{base}...HEAD"], cwd=cwd)
+    return _run(["git", "diff", f"--unified={unified}", f"{base}...{head}"], cwd=cwd)
 
 
-def get_staged_diff(unified: int = 80, cwd: Path | None = None) -> str:
+def get_staged_diff(unified: int = 20, cwd: Path | None = None) -> str:
     _ensure_repo(cwd)
     return _run(["git", "diff", "--cached", f"--unified={unified}"], cwd=cwd)
