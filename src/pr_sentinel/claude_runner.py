@@ -27,11 +27,15 @@ def _ensure_claude_available() -> str:
     return path
 
 
-def _invoke(prompt: str, timeout: int) -> str:
+def _invoke(prompt: str, timeout: int, model: str | None = None) -> str:
     claude = _ensure_claude_available()
+    args = [claude]
+    if model:
+        args.extend(["--model", model])
+    args.extend(["-p", prompt])
     try:
         result = subprocess.run(
-            [claude, "-p", prompt],
+            args,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -66,15 +70,15 @@ def _extract_json(text: str) -> dict:
     raise ValueError("no JSON object found in output")
 
 
-def run_json(prompt: str, timeout: int = 180) -> dict:
+def run_json(prompt: str, timeout: int = 180, model: str | None = None) -> dict:
     """Invoke `claude -p` and return parsed JSON. Retries once on parse failure."""
-    raw = _invoke(prompt, timeout)
+    raw = _invoke(prompt, timeout, model)
     try:
         return _extract_json(raw)
     except (ValueError, json.JSONDecodeError):
         pass
 
-    raw = _invoke(prompt + RETRY_NUDGE, timeout)
+    raw = _invoke(prompt + RETRY_NUDGE, timeout, model)
     try:
         return _extract_json(raw)
     except (ValueError, json.JSONDecodeError) as e:

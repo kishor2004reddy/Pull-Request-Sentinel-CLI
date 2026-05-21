@@ -10,7 +10,9 @@ def run_agents(
     chunk_budget: int,
     on_start: Callable[[str], None] | None = None,
     on_finish: Callable[[str, dict | Exception], None] | None = None,
+    on_chunk_done: Callable[[str, int, int], None] | None = None,
     max_workers: int | None = None,
+    model: str | None = None,
 ) -> list[dict]:
     """Run selected agents in parallel and return results in deterministic order.
 
@@ -27,7 +29,7 @@ def run_agents(
         for key, agent in instances:
             if on_start:
                 on_start(agent.display_name)
-            future = pool.submit(agent.run, files, chunk_budget)
+            future = pool.submit(agent.run, files, chunk_budget, on_chunk_done, model)
             futures[future] = (key, agent)
 
         for future in as_completed(futures):
@@ -38,7 +40,12 @@ def run_agents(
                 if on_finish:
                     on_finish(agent.display_name, result)
             except Exception as e:
-                results[key] = {"agent": agent.display_name, "findings": []}
+                results[key] = {
+                    "agent": agent.display_name,
+                    "findings": [],
+                    "failed": True,
+                    "error": str(e),
+                }
                 if on_finish:
                     on_finish(agent.display_name, e)
 

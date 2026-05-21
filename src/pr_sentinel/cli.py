@@ -1,14 +1,35 @@
+import sys
+import threading
 from pathlib import Path
 
 import click
 
-from pr_sentinel import git_diff, diff_parser, orchestrator, report_generator
+from pr_sentinel import chunker, git_diff, diff_parser, orchestrator, report_generator
 from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel.chunker import DEFAULT_CHUNK_BUDGET
 
 DEFAULT_AGENTS = ["security", "quality", "performance", "testing"]
 VALID_AGENTS = set(DEFAULT_AGENTS)
 VALID_FORMATS = {"json", "markdown", "both"}
+
+
+def _enable_ansi() -> bool:
+    """Enable ANSI escape codes on the current stdout. Returns True if usable."""
+    if not sys.stdout.isatty():
+        return False
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+    except Exception:
+        return False
 
 
 def _parse_agents(value: str) -> list[str]:
@@ -40,7 +61,11 @@ def main() -> None:
 @click.option(
     "--agents",
     default=",".join(DEFAULT_AGENTS),
-    help="Comma-separated agents to run. Default: all.",
+    help=(
+        "Comma-separated agents to run. "
+        f"Available: {', '.join(DEFAULT_AGENTS)}. "
+        "Pick any subset (e.g. --agents security,quality). Default: all."
+    ),
 )
 @click.option(
     "--out",
@@ -72,6 +97,17 @@ def main() -> None:
     show_default=True,
     help="Max combined diff chars per Claude call before chunking.",
 )
+@click.option(
+    "--model",
+    default=None,
+    help=(
+        "Claude model to use. "
+        "Available shortcuts: sonnet, opus, haiku. "
+        "Or pass a full model ID such as claude-opus-4-7, claude-sonnet-4-6, "
+        "claude-haiku-4-5-20251001. "
+        "Forwarded to `claude --model`. Default: Claude Code's configured model."
+    ),
+)
 def review(
     base: str,
     diff_path: Path | None,
@@ -81,6 +117,7 @@ def review(
     out_format: str,
     max_file_size: int,
     chunk_budget: int,
+    model: str | None,
 ) -> None:
     """Review changes and write a structured report."""
     agent_list = _parse_agents(agents)
@@ -97,6 +134,11 @@ def review(
     else:
         raw_diff = git_diff.get_branch_diff(base)
         source = f"branch:{base}"
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    diff_save_path = out_dir / "source.diff"
+    diff_save_path.write_text(raw_diff, encoding="utf-8")
+    click.echo(f"Saved diff: {diff_save_path}")
 
     files = diff_parser.parse(raw_diff, max_file_size=max_file_size)
 
@@ -122,20 +164,70 @@ def review(
             f"Available: {', '.join(sorted(AGENT_REGISTRY))}"
         )
 
+    total_diff_size = sum(len(f["diff"]) for f in files)
+    chunks = chunker.chunk_files(files, budget=chunk_budget)
+    chunk_count = len(chunks)
+    if chunk_count > 1:
+        click.echo(
+            f"Diff size: {total_diff_size:,} chars -> {chunk_count} chunks "
+            f"(budget {chunk_budget:,})"
+        )
+
+    click.echo(f"Model: {model or 'Claude Code default'}")
     click.echo(f"Running {len(available)} agent(s) in parallel: {', '.join(available)}")
+
+    agent_displays = [AGENT_REGISTRY[k].display_name for k in available]
+    line_index = {name: i for i, name in enumerate(agent_displays)}
+    n_lines = len(agent_displays)
+    ansi_ok = chunk_count > 1 and _enable_ansi()
+
+    if ansi_ok:
+        for name in agent_displays:
+            click.echo(f"  {name:20} waiting...")
+
+    print_lock = threading.Lock()
+    errors: list[tuple[str, str]] = []
+
+    def _replace_line(name: str, text: str) -> None:
+        lines_up = n_lines - line_index[name]
+        sys.stdout.write(
+            f"\033[{lines_up}A\r\033[2K  {name:20} {text}\033[{lines_up}B\r"
+        )
+        sys.stdout.flush()
+
+    def _on_chunk_done(name: str, idx: int, total: int) -> None:
+        if total <= 1:
+            return
+        with print_lock:
+            if ansi_ok:
+                _replace_line(name, f"chunk {idx}/{total} done")
+            else:
+                click.echo(f"  {name:20} chunk {idx}/{total} done")
 
     def _on_finish(name: str, result_or_err: dict | Exception) -> None:
         if isinstance(result_or_err, Exception):
-            click.echo(f"  {name}: FAILED ({result_or_err})", err=True)
-        else:
-            click.echo(f"  {name}: {len(result_or_err['findings'])} finding(s)")
+            with print_lock:
+                errors.append((name, str(result_or_err)))
+                if ansi_ok:
+                    _replace_line(name, "FAILED")
 
     agent_results = orchestrator.run_agents(
         agent_keys=available,
         files=files,
         chunk_budget=chunk_budget,
         on_finish=_on_finish,
+        on_chunk_done=_on_chunk_done,
+        model=model,
     )
+
+    click.echo("")
+    click.echo("Findings:")
+    for r in agent_results:
+        if r.get("failed"):
+            continue
+        click.echo(f"  {r['agent']:20} {len(r['findings'])} finding(s)")
+    for name, err in errors:
+        click.echo(f"  {name:20} FAILED ({err})", err=True)
 
     report = report_generator.build_report(
         agent_results=agent_results,
@@ -150,7 +242,16 @@ def review(
         written.append(report_generator.write_markdown(report, out_dir))
 
     click.echo("")
-    click.echo(f"Risk Level: {report['riskLevel']}")
+    failed_count = sum(1 for r in agent_results if r.get("failed"))
+    if failed_count == len(agent_results):
+        click.echo("Risk Level: Unknown (all agents failed)")
+    elif failed_count:
+        click.echo(
+            f"Risk Level: {report['riskLevel']} "
+            f"(warning: {failed_count} agent(s) failed)"
+        )
+    else:
+        click.echo(f"Risk Level: {report['riskLevel']}")
     click.echo(report["summary"])
     for p in written:
         click.echo(f"Wrote: {p}")

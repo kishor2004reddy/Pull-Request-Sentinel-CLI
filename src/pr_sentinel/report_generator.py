@@ -9,8 +9,8 @@ def _risk_level(findings: list[dict]) -> str:
     severities = [f["severity"] for f in findings]
     if "High" in severities:
         return "High"
-    if severities.count("Medium") >= 2:
-        return "Medium"
+    if severities.count("Medium") >= 5:
+        return "High"
     if "Medium" in severities:
         return "Medium"
     if severities:
@@ -18,14 +18,24 @@ def _risk_level(findings: list[dict]) -> str:
     return "None"
 
 
-def _summary_text(findings: list[dict], agents_executed: list[str]) -> str:
+def _summary_text(
+    findings: list[dict],
+    agents_executed: list[str],
+    failed_agents: list[str] | None = None,
+) -> str:
+    failed_agents = failed_agents or []
+    successful = len(agents_executed) - len(failed_agents)
     if not findings:
-        return f"No issues found across {len(agents_executed)} agent(s)."
-    counts: dict[str, int] = {}
-    for f in findings:
-        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
-    parts = [f"{counts[s]} {s}" for s in ("High", "Medium", "Low") if s in counts]
-    return f"{len(findings)} finding(s): {', '.join(parts)}."
+        base = f"No issues found across {successful} agent(s)."
+    else:
+        counts: dict[str, int] = {}
+        for f in findings:
+            counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+        parts = [f"{counts[s]} {s}" for s in ("High", "Medium", "Low") if s in counts]
+        base = f"{len(findings)} finding(s): {', '.join(parts)}."
+    if failed_agents:
+        base += f" Failed: {', '.join(failed_agents)}."
+    return base
 
 
 def build_report(
@@ -34,21 +44,29 @@ def build_report(
     source: str,
 ) -> dict:
     all_findings: list[dict] = []
+    failed_agents: list[str] = []
     for r in agent_results:
         all_findings.extend(r.get("findings", []))
+        if r.get("failed"):
+            failed_agents.append(r["agent"])
 
     all_findings.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 99), f["file"]))
 
     agents_executed = [r["agent"] for r in agent_results]
+
+    risk = _risk_level(all_findings)
+    if failed_agents and len(failed_agents) == len(agent_results):
+        risk = "Unknown"
 
     return {
         "tool": "PR Sentinel",
         "baseBranch": base_branch,
         "source": source,
         "reviewedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "riskLevel": _risk_level(all_findings),
-        "summary": _summary_text(all_findings, agents_executed),
+        "riskLevel": risk,
+        "summary": _summary_text(all_findings, agents_executed, failed_agents),
         "agentsExecuted": agents_executed,
+        "failedAgents": failed_agents,
         "findings": all_findings,
     }
 
@@ -72,6 +90,14 @@ def _merge_verdict(report: dict) -> str:
     findings = report["findings"]
     high = sum(1 for f in findings if f["severity"] == "High")
     medium = sum(1 for f in findings if f["severity"] == "Medium")
+
+    if risk == "Unknown":
+        failed = report.get("failedAgents", [])
+        return (
+            f"Risk level could not be determined: all {len(failed)} review agent(s) failed to complete "
+            f"({', '.join(failed)}). Inspect the error output from the CLI run, fix the underlying cause "
+            f"(e.g. invalid --model name, missing Claude Code auth), and re-run the review."
+        )
 
     if risk == "High":
         return (
@@ -128,6 +154,9 @@ def _render_markdown(report: dict) -> str:
     lines.append(f"- Base branch: `{report['baseBranch']}`")
     lines.append(f"- Reviewed at: {report['reviewedAt']}")
     lines.append(f"- Agents: {', '.join(report['agentsExecuted'])}")
+    failed = report.get("failedAgents") or []
+    if failed:
+        lines.append(f"- Failed agents: {', '.join(failed)}")
     lines.append(f"- {report['summary']}")
     lines.append("")
 
