@@ -5,6 +5,7 @@ from pr_sentinel.agents import AGENT_REGISTRY
 
 DEFAULT_MAX_PARALLEL = 8
 DEFAULT_TIMEOUT = 600
+DEFAULT_MODEL = "haiku"
 
 
 def run_agents(
@@ -14,7 +15,7 @@ def run_agents(
     on_finish: Callable[[str, dict | Exception], None] | None = None,
     on_chunk_done: Callable[[str, int, int], None] | None = None,
     max_parallel: int = DEFAULT_MAX_PARALLEL,
-    model: str | None = None,
+    model: str = DEFAULT_MODEL,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> list[dict]:
     """Run all (agent, chunk) tasks in parallel under a single bounded pool.

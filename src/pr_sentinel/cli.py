@@ -111,7 +111,7 @@ def main() -> None:
 )
 @click.option(
     "--model",
-    default=None,
+    default="haiku",
     help=(
         "Claude model to use. "
         "Available shortcuts: sonnet, opus, haiku. "
