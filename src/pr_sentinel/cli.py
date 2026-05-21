@@ -59,6 +59,17 @@ def main() -> None:
 )
 @click.option("--staged", is_flag=True, help="Review staged changes (git diff --cached).")
 @click.option(
+    "--repo",
+    "repo_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Path to the git repository to review. "
+        "Defaults to the current working directory. "
+        "Ignored when --diff is used."
+    ),
+)
+@click.option(
     "--agents",
     default=",".join(DEFAULT_AGENTS),
     help=(
@@ -112,6 +123,7 @@ def review(
     base: str,
     diff_path: Path | None,
     staged: bool,
+    repo_dir: Path | None,
     agents: str,
     out_dir: Path,
     out_format: str,
@@ -129,11 +141,11 @@ def review(
         raw_diff = diff_path.read_text(encoding="utf-8", errors="replace")
         source = f"file:{diff_path}"
     elif staged:
-        raw_diff = git_diff.get_staged_diff()
-        source = "staged"
+        raw_diff = git_diff.get_staged_diff(cwd=repo_dir)
+        source = f"staged@{repo_dir}" if repo_dir else "staged"
     else:
-        raw_diff = git_diff.get_branch_diff(base)
-        source = f"branch:{base}"
+        raw_diff = git_diff.get_branch_diff(base, cwd=repo_dir)
+        source = f"branch:{base}@{repo_dir}" if repo_dir else f"branch:{base}"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     diff_save_path = out_dir / "source.diff"
