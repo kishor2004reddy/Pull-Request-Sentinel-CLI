@@ -32,10 +32,11 @@ def _invoke(prompt: str, timeout: int, model: str | None = None) -> str:
     args = [claude]
     if model:
         args.extend(["--model", model])
-    args.extend(["-p", prompt])
+    args.append("-p")
     try:
         result = subprocess.run(
             args,
+            input=prompt,
             capture_output=True,
             text=True,
             encoding="utf-8",
