@@ -31,6 +31,11 @@ _DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
 _TRUNCATION_NOTE = "\n\n[... diff truncated by pr-sentinel: exceeded --max-file-size ...]\n"
 
 
+def all_paths(raw_diff: str) -> list[str]:
+    """Return every file path mentioned in the diff, before any filtering."""
+    return [m.group(2) for m in _DIFF_HEADER.finditer(raw_diff)]
+
+
 def _is_noise(path: str) -> bool:
     norm = path.replace("\\", "/")
     name = posixpath.basename(norm)

@@ -13,6 +13,7 @@ setup(
     },
     install_requires=[
         "click>=8.1",
+        "rich>=13",
     ],
     extras_require={
         "dev": ["pytest>=7.0"],
