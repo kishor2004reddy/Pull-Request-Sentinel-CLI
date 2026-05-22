@@ -5,6 +5,8 @@ import subprocess
 
 import click
 
+from pr_sentinel import cache
+
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _FIRST_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -71,17 +73,39 @@ def _extract_json(text: str) -> dict:
     raise ValueError("no JSON object found in output")
 
 
-def run_json(prompt: str, timeout: int = 600, model: str | None = None) -> dict:
-    """Invoke `claude -p` and return parsed JSON. Retries once on parse failure."""
+def run_json(
+    prompt: str,
+    timeout: int = 600,
+    model: str | None = None,
+    use_cache: bool = True,
+) -> dict:
+    """Invoke `claude -p` and return parsed JSON. Retries once on parse failure.
+
+    Successful responses are cached under sha256(model + prompt). Cache hits skip
+    the subprocess entirely. Failures (timeouts, exit codes, JSON-parse errors)
+    are never cached.
+    """
+    key = cache.cache_key(prompt, model) if use_cache else None
+    if key is not None:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
     raw = _invoke(prompt, timeout, model)
     try:
-        return _extract_json(raw)
+        parsed = _extract_json(raw)
+        if key is not None:
+            cache.set(key, parsed)
+        return parsed
     except (ValueError, json.JSONDecodeError):
         pass
 
     raw = _invoke(prompt + RETRY_NUDGE, timeout, model)
     try:
-        return _extract_json(raw)
+        parsed = _extract_json(raw)
+        if key is not None:
+            cache.set(key, parsed)
+        return parsed
     except (ValueError, json.JSONDecodeError) as e:
         raise ClaudeRunnerError(
             f"claude returned non-JSON output after retry: {raw[:300]!r}"

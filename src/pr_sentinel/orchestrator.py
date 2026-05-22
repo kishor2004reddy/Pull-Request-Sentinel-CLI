@@ -17,6 +17,7 @@ def run_agents(
     max_parallel: int = DEFAULT_MAX_PARALLEL,
     model: str = DEFAULT_MODEL,
     timeout: int = DEFAULT_TIMEOUT,
+    use_cache: bool = True,
 ) -> list[dict]:
     """Run all (agent, chunk) tasks in parallel under a single bounded pool.
 
@@ -58,7 +59,9 @@ def run_agents(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         future_to_meta = {}
         for k, idx, chunk in tasks:
-            future = pool.submit(instances[k].process_chunk, chunk, model, timeout)
+            future = pool.submit(
+                instances[k].process_chunk, chunk, model, timeout, use_cache
+            )
             future_to_meta[future] = (k, idx)
 
         for future in as_completed(future_to_meta):

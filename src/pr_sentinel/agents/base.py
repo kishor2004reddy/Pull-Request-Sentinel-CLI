@@ -24,6 +24,7 @@ class BaseAgent:
         chunk: list[dict],
         model: str | None = None,
         timeout: int = 600,
+        use_cache: bool = True,
     ) -> list[dict]:
         """Process a single chunk and return validated findings.
 
@@ -32,7 +33,9 @@ class BaseAgent:
         """
         diff_block = chunker.format_diff_block(chunk)
         prompt = self._template.replace("<<<DIFF>>>", diff_block)
-        response = claude_runner.run_json(prompt, timeout=timeout, model=model)
+        response = claude_runner.run_json(
+            prompt, timeout=timeout, model=model, use_cache=use_cache
+        )
         return self._validate_findings(response)
 
     def _validate_findings(self, response: dict) -> list[dict]:

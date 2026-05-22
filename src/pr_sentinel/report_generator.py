@@ -198,19 +198,28 @@ def _render_markdown(report: dict) -> str:
         lines.append("_No findings._")
         return "\n".join(lines) + "\n"
 
+    by_agent: dict[str, list[dict]] = {}
     for f in findings:
-        lines.append(f"### {f['severity']} — {f['agent']}")
-        lines.append(f"- File: `{f['file']}`")
-        if f.get("lineHint"):
-            lines.append(f"- Location: `{f['lineHint']}`")
+        by_agent.setdefault(f["agent"], []).append(f)
+
+    for agent_name in report["agentsExecuted"]:
+        agent_findings = by_agent.get(agent_name, [])
+        if not agent_findings:
+            continue
+        lines.append(f"### {agent_name}")
         lines.append("")
-        lines.append(f"**Issue:** {f['issue']}")
-        lines.append("")
-        if f.get("reasoning"):
-            lines.append(f"**Reasoning:** {f['reasoning']}")
+        for f in agent_findings:
+            lines.append(f"#### {f['severity']} — `{f['file']}`")
+            if f.get("lineHint"):
+                lines.append(f"- Location: `{f['lineHint']}`")
             lines.append("")
-        if f.get("recommendation"):
-            lines.append(f"**Recommendation:** {f['recommendation']}")
+            lines.append(f"**Issue:** {f['issue']}")
             lines.append("")
+            if f.get("reasoning"):
+                lines.append(f"**Reasoning:** {f['reasoning']}")
+                lines.append("")
+            if f.get("recommendation"):
+                lines.append(f"**Recommendation:** {f['recommendation']}")
+                lines.append("")
 
     return "\n".join(lines) + "\n"
