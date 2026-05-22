@@ -236,10 +236,10 @@ def _render_markdown(report: dict) -> str:
             continue
         lines.append(f"### {agent_name}  _({len(agent_findings)} finding(s))_")
         lines.append("")
-        for f in agent_findings:
+        for i, f in enumerate(agent_findings, start=1):
             location = f" · line `{f['lineHint']}`" if f.get("lineHint") else ""
             lines.append(
-                f"#### `{f['file']}` — **{f['severity']}**{location}"
+                f"#### {i}. `{f['file']}` — **{f['severity']}**{location}"
             )
             lines.append("")
             lines.append(f"**Issue.** {f['issue']}")
