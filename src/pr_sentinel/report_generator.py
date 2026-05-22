@@ -143,26 +143,52 @@ def _key_recommendations(report: dict, limit: int = 5) -> list[dict]:
     return recs
 
 
+def _md_cell(s: str) -> str:
+    """Make a string safe for a markdown table cell."""
+    return s.replace("|", "\\|").replace("\n", " ").strip()
+
+
 def _render_markdown(report: dict) -> str:
     lines: list[str] = []
+    findings = report["findings"]
+    risk = report["riskLevel"]
+
+    counts = {"High": 0, "Medium": 0, "Low": 0}
+    for f in findings:
+        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+    breakdown = (
+        f"{len(findings)} total · {counts['High']} High · "
+        f"{counts['Medium']} Medium · {counts['Low']} Low"
+        if findings
+        else "0 findings"
+    )
+
     lines.append("# PR Sentinel Review Report")
+    lines.append("")
+    lines.append(f"> **Risk Level: {risk}** — {report['summary']}")
+    lines.append("")
+    lines.append("---")
     lines.append("")
 
     lines.append("## Summary")
-    lines.append(f"- Risk Level: **{report['riskLevel']}**")
-    lines.append(f"- Source: `{report['source']}`")
-    lines.append(f"- Base branch: `{report['baseBranch']}`")
-    lines.append(f"- Reviewed at: {report['reviewedAt']}")
-    lines.append(f"- Agents: {', '.join(report['agentsExecuted'])}")
+    lines.append("")
+    lines.append("| Field | Value |")
+    lines.append("|---|---|")
+    lines.append(f"| Risk Level | **{risk}** |")
+    lines.append(f"| Source | `{report['source']}` |")
+    lines.append(f"| Base branch | `{report['baseBranch']}` |")
+    lines.append(f"| Reviewed at | {report['reviewedAt']} |")
+    lines.append(f"| Agents | {', '.join(report['agentsExecuted'])} |")
     failed = report.get("failedAgents") or []
     if failed:
-        lines.append(f"- Failed agents: {', '.join(failed)}")
-    lines.append(f"- {report['summary']}")
+        lines.append(f"| Failed agents | {', '.join(failed)} |")
+    lines.append(f"| Findings | {breakdown} |")
     lines.append("")
 
     lines.append("## Merge Verdict")
     lines.append("")
-    lines.append(_merge_verdict(report))
+    verdict_text = _merge_verdict(report).replace("\n", "\n> ")
+    lines.append(f"> {verdict_text}")
     lines.append("")
 
     lines.append("## Key Findings")
@@ -172,11 +198,14 @@ def _render_markdown(report: dict) -> str:
         lines.append("_No findings._")
         lines.append("")
     else:
-        for f in key:
-            location = f" (`{f['lineHint']}`)" if f.get("lineHint") else ""
+        lines.append("| # | Severity | File | Location | Issue | Agent |")
+        lines.append("|---|---|---|---|---|---|")
+        for i, f in enumerate(key, 1):
+            loc = f.get("lineHint") or ""
+            loc_cell = f"`{_md_cell(loc)}`" if loc else "—"
             lines.append(
-                f"- **{f['severity']}** — `{f['file']}`{location} — {f['issue']} "
-                f"_(from {f['agent']})_"
+                f"| {i} | **{f['severity']}** | `{_md_cell(f['file'])}` | "
+                f"{loc_cell} | {_md_cell(f['issue'])} | {_md_cell(f['agent'])} |"
             )
         lines.append("")
 
@@ -187,13 +216,12 @@ def _render_markdown(report: dict) -> str:
         lines.append("_No recommendations._")
         lines.append("")
     else:
-        for f in recs:
-            lines.append(f"- `{f['file']}` — {f['recommendation']}")
+        for i, f in enumerate(recs, 1):
+            lines.append(f"{i}. **`{f['file']}`** — {f['recommendation']}")
         lines.append("")
 
     lines.append("## All Findings")
     lines.append("")
-    findings = report["findings"]
     if not findings:
         lines.append("_No findings._")
         return "\n".join(lines) + "\n"
@@ -206,20 +234,21 @@ def _render_markdown(report: dict) -> str:
         agent_findings = by_agent.get(agent_name, [])
         if not agent_findings:
             continue
-        lines.append(f"### {agent_name}")
+        lines.append(f"### {agent_name}  _({len(agent_findings)} finding(s))_")
         lines.append("")
         for f in agent_findings:
-            lines.append(f"#### {f['severity']} — `{f['file']}`")
-            if f.get("lineHint"):
-                lines.append(f"- Location: `{f['lineHint']}`")
+            location = f" · line `{f['lineHint']}`" if f.get("lineHint") else ""
+            lines.append(
+                f"#### `{f['file']}` — **{f['severity']}**{location}"
+            )
             lines.append("")
-            lines.append(f"**Issue:** {f['issue']}")
+            lines.append(f"**Issue.** {f['issue']}")
             lines.append("")
             if f.get("reasoning"):
-                lines.append(f"**Reasoning:** {f['reasoning']}")
+                lines.append(f"**Reasoning.** {f['reasoning']}")
                 lines.append("")
             if f.get("recommendation"):
-                lines.append(f"**Recommendation:** {f['recommendation']}")
+                lines.append(f"**Recommendation.** {f['recommendation']}")
                 lines.append("")
 
     return "\n".join(lines) + "\n"

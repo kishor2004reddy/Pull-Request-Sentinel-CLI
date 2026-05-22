@@ -38,11 +38,21 @@ def _parse_agents(value: str) -> list[str]:
     return requested
 
 
-def _header_panel(source: str, repo_dir, model, diff_save_path: Path) -> Panel:
+def _header_panel(
+    source: str,
+    repo_dir,
+    model,
+    diff_save_path: Path,
+    base_branch: str | None = None,
+    head_branch: str | None = None,
+) -> Panel:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold cyan", no_wrap=True)
     grid.add_column()
     grid.add_row("Source", source)
+    if base_branch and head_branch:
+        grid.add_row("Base", base_branch)
+        grid.add_row("Head", head_branch)
     grid.add_row("Repo", str(repo_dir) if repo_dir else "(current directory)")
     grid.add_row("Model", model or "Claude Code default")
     grid.add_row("Saved diff", str(diff_save_path))
@@ -343,6 +353,9 @@ def review(
     if diff_path and staged:
         raise click.UsageError("--diff and --staged cannot be combined.")
 
+    base_display: str | None = None
+    head_display: str | None = None
+
     if diff_path:
         raw_diff = diff_path.read_text(encoding="utf-8", errors="replace")
         source = f"file:{diff_path}"
@@ -350,24 +363,29 @@ def review(
         raw_diff = git_diff.get_staged_diff(cwd=repo_dir)
         source = f"staged@{repo_dir}" if repo_dir else "staged"
     else:
-        display_head = head
+        head_display = head
         if head == "HEAD":
             try:
                 current = git_diff.get_current_branch(cwd=repo_dir).strip()
                 if current:
-                    display_head = current
+                    head_display = current
             except Exception:
                 pass
+        base_display = base
         raw_diff = git_diff.get_branch_diff(base, head=head, cwd=repo_dir)
         repo_suffix = f"@{repo_dir}" if repo_dir else ""
-        source = f"branch:{base}...{display_head}{repo_suffix}"
+        source = f"branch:{base}...{head_display}{repo_suffix}"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     diff_save_path = out_dir / "source.diff"
     diff_save_path.write_text(raw_diff, encoding="utf-8")
 
     console.print()
-    console.print(_header_panel(source, repo_dir, model, diff_save_path))
+    console.print(
+        _header_panel(
+            source, repo_dir, model, diff_save_path, base_display, head_display
+        )
+    )
 
     files = diff_parser.parse(raw_diff, max_file_size=max_file_size)
     kept_paths = {f["filePath"] for f in files}
