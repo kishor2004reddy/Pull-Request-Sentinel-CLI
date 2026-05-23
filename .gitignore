@@ -1,5 +1,7 @@
 myvenv/
 __pycache__/
-pr_sentinel.egg-info/
 .pytest_cache/
 reports/
+dist/
+build/
+*.egg-info/

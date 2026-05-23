@@ -296,7 +296,7 @@ def main() -> None:
         "Available shortcuts: sonnet, opus, haiku. "
         "Or pass a full model ID such as claude-opus-4-7, claude-sonnet-4-6, "
         "claude-haiku-4-5-20251001. "
-        "Forwarded to `claude --model`. Default: Claude Code's configured model."
+        "Forwarded to `claude --model`. Default: haiku"
     ),
 )
 @click.option(

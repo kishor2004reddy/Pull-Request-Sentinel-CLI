@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pr-sentinel"
+description = "Local PR review tool that orchestrates Claude Code CLI agents over git diffs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Y Kishor Kumar Reddy", email = "kishor04reddy@gmail.com" },
+]
+keywords = [
+    "pr-review",
+    "code-review",
+    "claude",
+    "claude-code",
+    "cli",
+    "git-diff",
+    "static-analysis",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "click>=8.1",
+    "rich>=13",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "build",
+    "twine",
+]
+
+[project.scripts]
+pr-sentinel = "pr_sentinel.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/kishor2004reddy/Pull-Request-Sentinel-CLI"
+Repository = "https://github.com/kishor2004reddy/Pull-Request-Sentinel-CLI"
+Issues = "https://github.com/kishor2004reddy/Pull-Request-Sentinel-CLI/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "pr_sentinel.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pr_sentinel = ["prompts/*.md"]

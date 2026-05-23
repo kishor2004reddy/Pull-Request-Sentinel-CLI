@@ -148,6 +148,42 @@ def _md_cell(s: str) -> str:
     return s.replace("|", "\\|").replace("\n", " ").strip()
 
 
+def _findings_summary_rows(report: dict) -> list[str]:
+    findings = report["findings"]
+    agents_executed = report["agentsExecuted"]
+    failed_agents = set(report.get("failedAgents") or [])
+
+    by_agent: dict[str, list[dict]] = {a: [] for a in agents_executed}
+    for f in findings:
+        by_agent.setdefault(f["agent"], []).append(f)
+
+    rows: list[str] = []
+    rows.append("| Agent | Status | Total | High | Medium | Low |")
+    rows.append("|---|---|---:|---:|---:|---:|")
+
+    total = high = medium = low = 0
+    for agent in agents_executed:
+        if agent in failed_agents:
+            rows.append(f"| {agent} | FAILED | — | — | — | — |")
+            continue
+        af = by_agent.get(agent, [])
+        f_high = sum(1 for f in af if f["severity"] == "High")
+        f_med = sum(1 for f in af if f["severity"] == "Medium")
+        f_low = sum(1 for f in af if f["severity"] == "Low")
+        total += len(af)
+        high += f_high
+        medium += f_med
+        low += f_low
+        rows.append(
+            f"| {agent} | OK | {len(af)} | {f_high} | {f_med} | {f_low} |"
+        )
+
+    rows.append(
+        f"| **TOTAL** | | **{total}** | **{high}** | **{medium}** | **{low}** |"
+    )
+    return rows
+
+
 def _render_markdown(report: dict) -> str:
     lines: list[str] = []
     findings = report["findings"]
@@ -221,6 +257,8 @@ def _render_markdown(report: dict) -> str:
         lines.append("")
 
     lines.append("## All Findings")
+    lines.append("")
+    lines.extend(_findings_summary_rows(report))
     lines.append("")
     if not findings:
         lines.append("_No findings._")
