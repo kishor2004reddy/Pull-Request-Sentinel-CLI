@@ -9,7 +9,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-    { name = "Y Kishor Kumar Reddy", email = "kishor04reddy@gmail.com" },
+    { name = "Yarramaddi Kishor Kumar Reddy", email = "kishor04reddy@gmail.com" },
 ]
 keywords = [
     "pr-review",
