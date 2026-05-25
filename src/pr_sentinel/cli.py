@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 
-from pr_sentinel import cache, chunker, git_diff, diff_parser, orchestrator, report_generator
+from pr_sentinel import __version__, cache, chunker, git_diff, diff_parser, orchestrator, report_generator
 from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel.config import (
     DEFAULT_AGENTS,
@@ -62,7 +62,7 @@ def _header_panel(
     return Panel(
         grid,
         title="[bold cyan]PR Sentinel[/]",
-        subtitle="[dim]v0.1.0[/]",
+        subtitle=f"[dim]v{__version__}[/]",
         border_style="cyan",
         padding=(1, 2),
     )
