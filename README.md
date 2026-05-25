@@ -94,7 +94,7 @@ Open `reports/review-report.md`.
 | `--out` | `./reports` | Output directory. |
 | `--format` | `both` | `json`, `markdown`, or `both`. |
 | `--max-file-size` | `20000` | Per-file diff size cap (chars). Larger files get truncated with a marker. |
-| `--chunk-budget` | `60000` | Max combined diff size per Claude call before chunking kicks in. |
+| `--chunk-budget` | `100000` | Max combined diff size per Claude call before chunking kicks in. |
 | `--model` | `haiku` | Claude model to use. Shortcuts: `sonnet`, `opus`, `haiku`. Or pass a full model ID such as `claude-opus-4-7`. |
 | `--max-parallel` | `8` | Max concurrent `claude` calls across all (agent, chunk) pairs. |
 | `--timeout` | `600` | Per-call timeout in seconds for each `claude` subprocess. |
@@ -115,6 +115,8 @@ Inspect and manage the on-disk response cache.
 | `cache prune --older-than 30d` | Delete entries older than the given age. Supports `s/m/h/d` suffixes. Add `--dry-run` to preview. |
 
 The cache lives at `~/.pr-sentinel/cache/` by default. Override with the `PR_SENTINEL_CACHE_DIR` environment variable. Keys are `sha256(model + prompt)`, so changing the model or any prompt content invalidates the entry automatically.
+
+**Auto-pruning.** Every `pr-sentinel review` run silently drops cache entries older than 90 days before doing any work. No flag, no output — it just keeps the cache from growing unbounded over time. The threshold is set via `AUTO_PRUNE_AGE_DAYS` in [config.py](src/pr_sentinel/config.py). Use `cache prune --older-than ...` for manual prunes at a different age.
 
 ## Examples
 
@@ -180,12 +182,13 @@ The JSON report contains the same data in a single structured object suitable fo
 ```
 src/pr_sentinel/
 ├── cli.py                  # Click entrypoint + Rich UI
+├── config.py               # tunable defaults + shared constants (single source of truth)
 ├── git_diff.py             # git rev-parse, git diff, --staged
 ├── diff_parser.py          # per-file splitting + noise filter + truncation
 ├── chunker.py              # greedy packer to keep prompts under chunk-budget
 ├── claude_runner.py        # subprocess(claude -p) + JSON extraction + 1 retry
 ├── orchestrator.py         # parallel (agent, chunk) execution via ThreadPoolExecutor
-├── cache.py                # sha256-keyed disk cache for Claude responses
+├── cache.py                # sha256-keyed disk cache + 90-day auto-prune
 ├── report_generator.py     # build_report + JSON/Markdown writers
 ├── agents/
 │   ├── base.py             # BaseAgent: load prompt, chunk, call, validate
@@ -220,7 +223,7 @@ pytest -q
 
 **Slow runs** — large diffs trigger chunking. Each chunk is one Claude call per agent. Reduce scope with `--agents security` if you only want one perspective, or with `--max-file-size` to truncate huge files. The cache amortizes repeat runs against the same diff.
 
-**Lock files / minified files showing up** — they shouldn't. If they do, add the pattern to `NOISE_PATTERNS` in [diff_parser.py](src/pr_sentinel/diff_parser.py).
+**Lock files / minified files showing up** — they shouldn't. If they do, add the pattern to `NOISE_PATTERNS` in [config.py](src/pr_sentinel/config.py).
 
 ## Notes & limitations
 

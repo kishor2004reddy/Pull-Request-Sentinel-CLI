@@ -431,6 +431,7 @@ def review(
     errors: list[tuple[str, str]] = []
     use_cache = not no_cache
     cache.reset_stats()
+    cache.auto_prune()
 
     with Progress(
         TextColumn("[bold]{task.fields[name]:<22}[/]"),

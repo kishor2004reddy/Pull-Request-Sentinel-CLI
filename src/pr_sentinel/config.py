@@ -59,6 +59,8 @@ NOISE_PATTERNS = [
 # --- Cache ------------------------------------------------------------------
 CACHE_DIR_ENV = "PR_SENTINEL_CACHE_DIR"
 DEFAULT_CACHE_DIR = Path.home() / ".pr-sentinel" / "cache"
+AUTO_PRUNE_AGE_DAYS = 90
+AUTO_PRUNE_AGE_SECONDS = AUTO_PRUNE_AGE_DAYS * 86400
 
 # --- CLI ---------------------------------------------------------------------
 DEFAULT_BASE_BRANCH = "main"
