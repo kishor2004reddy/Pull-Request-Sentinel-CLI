@@ -3,6 +3,8 @@ from pathlib import Path
 
 import click
 
+from pr_sentinel.config import DEFAULT_UNIFIED_CONTEXT
+
 
 class GitError(click.ClickException):
     pass
@@ -53,13 +55,13 @@ def get_current_branch(cwd: Path | None = None) -> str:
 def get_branch_diff(
     base: str,
     head: str = "HEAD",
-    unified: int = 10,
+    unified: int = DEFAULT_UNIFIED_CONTEXT,
     cwd: Path | None = None,
 ) -> str:
     _ensure_repo(cwd)
     return _run(["git", "diff", f"--unified={unified}", f"{base}...{head}"], cwd=cwd)
 
 
-def get_staged_diff(unified: int = 10, cwd: Path | None = None) -> str:
+def get_staged_diff(unified: int = DEFAULT_UNIFIED_CONTEXT, cwd: Path | None = None) -> str:
     _ensure_repo(cwd)
     return _run(["git", "diff", "--cached", f"--unified={unified}"], cwd=cwd)

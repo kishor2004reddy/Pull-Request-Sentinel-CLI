@@ -6,8 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-_CACHE_ROOT_ENV = "PR_SENTINEL_CACHE_DIR"
-_DEFAULT_ROOT = Path.home() / ".pr-sentinel" / "cache"
+from pr_sentinel.config import CACHE_DIR_ENV, DEFAULT_CACHE_DIR
 
 _stats_lock = threading.Lock()
 _stats = {"hits": 0, "misses": 0}
@@ -15,10 +14,10 @@ _stats = {"hits": 0, "misses": 0}
 
 def cache_dir() -> Path:
     """Return the active cache root. Honors $PR_SENTINEL_CACHE_DIR override."""
-    override = os.environ.get(_CACHE_ROOT_ENV)
+    override = os.environ.get(CACHE_DIR_ENV)
     if override:
         return Path(override)
-    return _DEFAULT_ROOT
+    return DEFAULT_CACHE_DIR
 
 
 def cache_key(prompt: str, model: str | None) -> str:

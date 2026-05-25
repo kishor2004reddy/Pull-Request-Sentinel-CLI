@@ -6,6 +6,7 @@ import subprocess
 import click
 
 from pr_sentinel import cache
+from pr_sentinel.config import DEFAULT_TIMEOUT
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _FIRST_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
@@ -75,7 +76,7 @@ def _extract_json(text: str) -> dict:
 
 def run_json(
     prompt: str,
-    timeout: int = 600,
+    timeout: int = DEFAULT_TIMEOUT,
     model: str | None = None,
     use_cache: bool = True,
 ) -> dict:

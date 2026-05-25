@@ -1,8 +1,7 @@
 from importlib import resources
 
 from pr_sentinel import chunker, claude_runner
-
-VALID_SEVERITIES = {"Low", "Medium", "High"}
+from pr_sentinel.config import DEFAULT_TIMEOUT, VALID_SEVERITIES
 
 
 def load_prompt(filename: str) -> str:
@@ -23,7 +22,7 @@ class BaseAgent:
         self,
         chunk: list[dict],
         model: str | None = None,
-        timeout: int = 600,
+        timeout: int = DEFAULT_TIMEOUT,
         use_cache: bool = True,
     ) -> list[dict]:
         """Process a single chunk and return validated findings.

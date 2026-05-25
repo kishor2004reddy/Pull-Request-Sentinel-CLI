@@ -1,4 +1,4 @@
-DEFAULT_CHUNK_BUDGET = 100_000
+from pr_sentinel.config import DEFAULT_CHUNK_BUDGET
 
 
 def chunk_files(files: list[dict], budget: int = DEFAULT_CHUNK_BUDGET) -> list[list[dict]]:

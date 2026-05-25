@@ -9,22 +9,25 @@ from rich.table import Table
 
 from pr_sentinel import cache, chunker, git_diff, diff_parser, orchestrator, report_generator
 from pr_sentinel.agents import AGENT_REGISTRY
-from pr_sentinel.chunker import DEFAULT_CHUNK_BUDGET
-from pr_sentinel.orchestrator import DEFAULT_MAX_PARALLEL, DEFAULT_TIMEOUT
-
-DEFAULT_AGENTS = ["security", "quality", "performance", "testing"]
-VALID_AGENTS = set(DEFAULT_AGENTS)
-VALID_FORMATS = {"json", "markdown", "both"}
+from pr_sentinel.config import (
+    DEFAULT_AGENTS,
+    DEFAULT_BASE_BRANCH,
+    DEFAULT_CHUNK_BUDGET,
+    DEFAULT_HEAD_REF,
+    DEFAULT_MAX_FILE_SIZE,
+    DEFAULT_MAX_PARALLEL,
+    DEFAULT_MODEL,
+    DEFAULT_OUT_DIR,
+    DEFAULT_PRUNE_AGE,
+    DEFAULT_REPORT_FORMAT,
+    DEFAULT_TIMEOUT,
+    RISK_STYLE,
+    SOURCE_DIFF_FILENAME,
+    VALID_AGENTS,
+    VALID_FORMATS,
+)
 
 console = Console()
-
-RISK_STYLE = {
-    "High": "red",
-    "Medium": "yellow",
-    "Low": "green",
-    "None": "green",
-    "Unknown": "red",
-}
 
 
 def _parse_agents(value: str) -> list[str]:
@@ -220,10 +223,10 @@ def main() -> None:
 
 
 @main.command()
-@click.option("--base", default="main", help="Base branch to diff against.")
+@click.option("--base", default=DEFAULT_BASE_BRANCH, help="Base branch to diff against.")
 @click.option(
     "--head",
-    default="HEAD",
+    default=DEFAULT_HEAD_REF,
     show_default=True,
     help=(
         "Source branch/ref to review. Defaults to HEAD (currently checked-out branch). "
@@ -262,7 +265,7 @@ def main() -> None:
     "--out",
     "out_dir",
     type=click.Path(file_okay=False, path_type=Path),
-    default=Path("./reports"),
+    default=DEFAULT_OUT_DIR,
     show_default=True,
     help="Output directory for reports.",
 )
@@ -270,14 +273,14 @@ def main() -> None:
     "--format",
     "out_format",
     type=click.Choice(sorted(VALID_FORMATS)),
-    default="both",
+    default=DEFAULT_REPORT_FORMAT,
     show_default=True,
     help="Report format(s) to emit.",
 )
 @click.option(
     "--max-file-size",
     type=int,
-    default=20000,
+    default=DEFAULT_MAX_FILE_SIZE,
     show_default=True,
     help="Per-file diff size cap (chars). Larger files are truncated.",
 )
@@ -290,13 +293,13 @@ def main() -> None:
 )
 @click.option(
     "--model",
-    default="haiku",
+    default=DEFAULT_MODEL,
     help=(
         "Claude model to use. "
         "Available shortcuts: sonnet, opus, haiku. "
         "Or pass a full model ID such as claude-opus-4-7, claude-sonnet-4-6, "
         "claude-haiku-4-5-20251001. "
-        "Forwarded to `claude --model`. Default: haiku"
+        f"Forwarded to `claude --model`. Default: {DEFAULT_MODEL}"
     ),
 )
 @click.option(
@@ -377,7 +380,7 @@ def review(
         source = f"branch:{base}...{head_display}{repo_suffix}"
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    diff_save_path = out_dir / "source.diff"
+    diff_save_path = out_dir / SOURCE_DIFF_FILENAME
     diff_save_path.write_text(raw_diff, encoding="utf-8")
 
     console.print()
@@ -551,7 +554,7 @@ def _parse_duration(s: str) -> int:
 @click.option(
     "--older-than",
     "older_than",
-    default="30d",
+    default=DEFAULT_PRUNE_AGE,
     show_default=True,
     help=(
         "Delete entries older than this duration. "

@@ -2,7 +2,11 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-SEVERITY_ORDER = {"High": 0, "Medium": 1, "Low": 2}
+from pr_sentinel.config import (
+    REPORT_JSON_FILENAME,
+    REPORT_MARKDOWN_FILENAME,
+    SEVERITY_ORDER,
+)
 
 
 def _risk_level(findings: list[dict]) -> str:
@@ -73,14 +77,14 @@ def build_report(
 
 def write_json(report: dict, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "report.json"
+    path = out_dir / REPORT_JSON_FILENAME
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return path
 
 
 def write_markdown(report: dict, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "review-report.md"
+    path = out_dir / REPORT_MARKDOWN_FILENAME
     path.write_text(_render_markdown(report), encoding="utf-8")
     return path
 
