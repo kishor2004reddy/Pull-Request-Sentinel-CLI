@@ -2,30 +2,7 @@ import fnmatch
 import posixpath
 import re
 
-NOISE_PATTERNS = [
-    "package-lock.json",
-    "yarn.lock",
-    "pnpm-lock.yaml",
-    "poetry.lock",
-    "Pipfile.lock",
-    "*.min.js",
-    "*.min.css",
-    "*.generated.*",
-    "*.Designer.cs",
-    "*.g.cs",
-    "*.g.i.cs",
-    "bin/*",
-    "*/bin/*",
-    "obj/*",
-    "*/obj/*",
-    "dist/*",
-    "*/dist/*",
-    "build/*",
-    "*/build/*",
-    "node_modules/*",
-    "*/node_modules/*",
-    "*/__pycache__/*",
-]
+from pr_sentinel.config import DEFAULT_MAX_FILE_SIZE, NOISE_PATTERNS
 
 _DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
 _TRUNCATION_NOTE = "\n\n[... diff truncated by pr-sentinel: exceeded --max-file-size ...]\n"
@@ -67,7 +44,7 @@ def _count_lines(chunk: str) -> tuple[int, int]:
     return added, removed
 
 
-def parse(raw_diff: str, max_file_size: int = 20000) -> list[dict]:
+def parse(raw_diff: str, max_file_size: int = DEFAULT_MAX_FILE_SIZE) -> list[dict]:
     """Split a unified diff into per-file records, filtering noise."""
     if not raw_diff.strip():
         return []

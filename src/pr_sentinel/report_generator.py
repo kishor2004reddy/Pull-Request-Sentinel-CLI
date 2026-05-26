@@ -2,7 +2,11 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-SEVERITY_ORDER = {"High": 0, "Medium": 1, "Low": 2}
+from pr_sentinel.config import (
+    REPORT_JSON_FILENAME,
+    REPORT_MARKDOWN_FILENAME,
+    SEVERITY_ORDER,
+)
 
 
 def _risk_level(findings: list[dict]) -> str:
@@ -54,8 +58,13 @@ def build_report(
 
     agents_executed = [r["agent"] for r in agent_results]
 
+    coverage_complete = len(failed_agents) == 0
+
     risk = _risk_level(all_findings)
     if failed_agents and len(failed_agents) == len(agent_results):
+        risk = "Unknown"
+    elif failed_agents and risk == "None":
+        # Some agents ran but found nothing — can't call it clean with partial coverage.
         risk = "Unknown"
 
     return {
@@ -64,6 +73,7 @@ def build_report(
         "source": source,
         "reviewedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "riskLevel": risk,
+        "coverageComplete": coverage_complete,
         "summary": _summary_text(all_findings, agents_executed, failed_agents),
         "agentsExecuted": agents_executed,
         "failedAgents": failed_agents,
@@ -73,14 +83,14 @@ def build_report(
 
 def write_json(report: dict, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "report.json"
+    path = out_dir / REPORT_JSON_FILENAME
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return path
 
 
 def write_markdown(report: dict, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "review-report.md"
+    path = out_dir / REPORT_MARKDOWN_FILENAME
     path.write_text(_render_markdown(report), encoding="utf-8")
     return path
 
@@ -93,10 +103,17 @@ def _merge_verdict(report: dict) -> str:
 
     if risk == "Unknown":
         failed = report.get("failedAgents", [])
+        all_failed = len(failed) == len(report.get("agentsExecuted", failed))
+        if all_failed:
+            return (
+                f"Risk level could not be determined: all {len(failed)} review agent(s) failed to complete "
+                f"({', '.join(failed)}). Inspect the error output from the CLI run, fix the underlying cause "
+                f"(e.g. invalid --model name, missing Claude Code auth), and re-run the review."
+            )
         return (
-            f"Risk level could not be determined: all {len(failed)} review agent(s) failed to complete "
-            f"({', '.join(failed)}). Inspect the error output from the CLI run, fix the underlying cause "
-            f"(e.g. invalid --model name, missing Claude Code auth), and re-run the review."
+            f"Risk level could not be confirmed: {len(failed)} agent(s) failed to complete "
+            f"({', '.join(failed)}) and the remaining agents found no issues — but coverage was incomplete. "
+            f"Re-run the review after resolving the failure to confirm this PR is clean."
         )
 
     if risk == "High":
@@ -210,7 +227,9 @@ def _render_markdown(report: dict) -> str:
     lines.append("")
     lines.append("| Field | Value |")
     lines.append("|---|---|")
+    coverage = "Yes" if report.get("coverageComplete", True) else "No — see failed agents"
     lines.append(f"| Risk Level | **{risk}** |")
+    lines.append(f"| Coverage complete | {coverage} |")
     lines.append(f"| Source | `{report['source']}` |")
     lines.append(f"| Base branch | `{report['baseBranch']}` |")
     lines.append(f"| Reviewed at | {report['reviewedAt']} |")

@@ -6,8 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-_CACHE_ROOT_ENV = "PR_SENTINEL_CACHE_DIR"
-_DEFAULT_ROOT = Path.home() / ".pr-sentinel" / "cache"
+from pr_sentinel.config import AUTO_PRUNE_AGE_SECONDS, CACHE_DIR_ENV, DEFAULT_CACHE_DIR
 
 _stats_lock = threading.Lock()
 _stats = {"hits": 0, "misses": 0}
@@ -15,10 +14,10 @@ _stats = {"hits": 0, "misses": 0}
 
 def cache_dir() -> Path:
     """Return the active cache root. Honors $PR_SENTINEL_CACHE_DIR override."""
-    override = os.environ.get(_CACHE_ROOT_ENV)
+    override = os.environ.get(CACHE_DIR_ENV)
     if override:
         return Path(override)
-    return _DEFAULT_ROOT
+    return DEFAULT_CACHE_DIR
 
 
 def cache_key(prompt: str, model: str | None) -> str:
@@ -115,6 +114,18 @@ def prune(max_age_seconds: int, dry_run: bool = False) -> tuple[int, int]:
         except OSError:
             continue
     return (count, bytes_)
+
+
+def auto_prune() -> None:
+    """Silently drop cache entries older than AUTO_PRUNE_AGE_SECONDS.
+
+    Called at the start of each review run. Swallows all errors so a flaky
+    filesystem can never break a review.
+    """
+    try:
+        prune(AUTO_PRUNE_AGE_SECONDS)
+    except Exception:
+        pass
 
 
 def stats() -> dict:

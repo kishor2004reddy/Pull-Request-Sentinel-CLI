@@ -2,10 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
 from pr_sentinel.agents import AGENT_REGISTRY
-
-DEFAULT_MAX_PARALLEL = 8
-DEFAULT_TIMEOUT = 600
-DEFAULT_MODEL = "haiku"
+from pr_sentinel.config import DEFAULT_MAX_PARALLEL, DEFAULT_MODEL, DEFAULT_TIMEOUT
 
 
 def run_agents(
