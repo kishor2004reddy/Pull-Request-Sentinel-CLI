@@ -37,9 +37,8 @@ class SummaryAgent:
         if not findings:
             return findings, 0
 
-        # Strip reasoning from LLM input — it is the longest field per finding and is
-        # never needed to decide whether two findings are duplicates. We restore it
-        # from the original data in _validate using the preserved _id.
+        # Include reasoning — it is the strongest signal for deciding whether two
+        # differently-worded findings describe the same underlying problem.
         slim = [
             {
                 "_id": i,
@@ -48,6 +47,7 @@ class SummaryAgent:
                 "file": f["file"],
                 "lineHint": f["lineHint"],
                 "issue": f["issue"],
+                "reasoning": f.get("reasoning", ""),
                 "recommendation": f.get("recommendation", ""),
             }
             for i, f in enumerate(findings)
