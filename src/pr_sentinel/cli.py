@@ -8,6 +8,7 @@ from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 
 from pr_sentinel import __version__, cache, chunker, git_diff, diff_parser, orchestrator, report_generator
+from pr_sentinel.agents.summary_agent import SummaryAgent
 from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel.config import (
     DEFAULT_AGENTS,
@@ -468,10 +469,31 @@ def review(
             if not r.get("failed"):
                 progress.update(task_ids[r["agent"]], status="[bold green]OK[/]")
 
+    raw_findings = [
+        f
+        for r in agent_results
+        if not r.get("failed")
+        for f in r.get("findings", [])
+    ]
+    cleaned_findings: list[dict] | None = None
+    removed_count = 0
+    if raw_findings:
+        with console.status("[dim]Summary Agent cleaning findings...[/]"):
+            try:
+                cleaned_findings, removed_count = SummaryAgent().run(
+                    findings=raw_findings,
+                    model=model,
+                    timeout=timeout,
+                    use_cache=use_cache,
+                )
+            except Exception as e:
+                console.print(f"[yellow]Summary Agent skipped: {e}[/]")
+
     report = report_generator.build_report(
         agent_results=agent_results,
         base_branch=base,
         source=source,
+        cleaned_findings=cleaned_findings,
     )
 
     written: list[Path] = []
@@ -481,6 +503,19 @@ def review(
         written.append(report_generator.write_markdown(report, out_dir))
 
     console.print(_findings_table(agent_results))
+
+    if cleaned_findings is not None:
+        if removed_count > 0:
+            console.print(
+                f"[dim]Summary Agent:[/] examined [cyan]{len(raw_findings)}[/] findings, "
+                f"removed [green]{removed_count}[/] duplicate/noise "
+                f"→ [bold]{len(cleaned_findings)}[/] remain."
+            )
+        else:
+            console.print(
+                f"[dim]Summary Agent:[/] examined [cyan]{len(raw_findings)}[/] findings, "
+                f"no duplicates found."
+            )
 
     if errors:
         console.print(_errors_panel(errors))

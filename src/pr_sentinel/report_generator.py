@@ -46,14 +46,16 @@ def build_report(
     agent_results: list[dict],
     base_branch: str,
     source: str,
+    cleaned_findings: list[dict] | None = None,
 ) -> dict:
-    all_findings: list[dict] = []
+    raw_findings: list[dict] = []
     failed_agents: list[str] = []
     for r in agent_results:
-        all_findings.extend(r.get("findings", []))
+        raw_findings.extend(r.get("findings", []))
         if r.get("failed"):
             failed_agents.append(r["agent"])
 
+    all_findings = list(cleaned_findings) if cleaned_findings is not None else raw_findings
     all_findings.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 99), f["file"]))
 
     agents_executed = [r["agent"] for r in agent_results]
@@ -67,7 +69,7 @@ def build_report(
         # Some agents ran but found nothing — can't call it clean with partial coverage.
         risk = "Unknown"
 
-    return {
+    report = {
         "tool": "PR Sentinel",
         "baseBranch": base_branch,
         "source": source,
@@ -79,6 +81,9 @@ def build_report(
         "failedAgents": failed_agents,
         "findings": all_findings,
     }
+    if cleaned_findings is not None:
+        report["rawFindingCount"] = len(raw_findings)
+    return report
 
 
 def write_json(report: dict, out_dir: Path) -> Path:
@@ -209,12 +214,15 @@ def _render_markdown(report: dict) -> str:
     counts = {"High": 0, "Medium": 0, "Low": 0}
     for f in findings:
         counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+    raw_count = report.get("rawFindingCount")
     breakdown = (
         f"{len(findings)} total · {counts['High']} High · "
         f"{counts['Medium']} Medium · {counts['Low']} Low"
         if findings
         else "0 findings"
     )
+    if raw_count is not None and raw_count != len(findings):
+        breakdown += f" (cleaned from {raw_count} raw)"
 
     lines.append("# PR Sentinel Review Report")
     lines.append("")
@@ -283,29 +291,44 @@ def _render_markdown(report: dict) -> str:
         lines.append("_No findings._")
         return "\n".join(lines) + "\n"
 
-    by_agent: dict[str, list[dict]] = {}
-    for f in findings:
-        by_agent.setdefault(f["agent"], []).append(f)
+    SEVERITY_LABELS = [
+        ("High",   "🔴 High Severity"),
+        ("Medium", "🟡 Medium Severity"),
+        ("Low",    "🔵 Low Severity"),
+    ]
 
-    for agent_name in report["agentsExecuted"]:
-        agent_findings = by_agent.get(agent_name, [])
-        if not agent_findings:
+    for severity, heading in SEVERITY_LABELS:
+        sev_findings = [f for f in findings if f["severity"] == severity]
+        if not sev_findings:
             continue
-        lines.append(f"### {agent_name}  _({len(agent_findings)} finding(s))_")
+
+        lines.append(f"### {heading}  _({len(sev_findings)} finding(s))_")
         lines.append("")
-        for i, f in enumerate(agent_findings, start=1):
-            location = f" · line `{f['lineHint']}`" if f.get("lineHint") else ""
-            lines.append(
-                f"#### {i}. `{f['file']}` — **{f['severity']}**{location}"
-            )
+
+        # Group by agent, preserving declared agent order
+        by_agent: dict[str, list[dict]] = {}
+        for f in sev_findings:
+            by_agent.setdefault(f["agent"], []).append(f)
+
+        for agent_name in report["agentsExecuted"]:
+            agent_findings = by_agent.get(agent_name, [])
+            if not agent_findings:
+                continue
+
+            lines.append(f"#### {agent_name}  _({len(agent_findings)} finding(s))_")
             lines.append("")
-            lines.append(f"**Issue.** {f['issue']}")
-            lines.append("")
-            if f.get("reasoning"):
-                lines.append(f"**Reasoning.** {f['reasoning']}")
+
+            for i, f in enumerate(agent_findings, start=1):
+                location = f" · line `{f['lineHint']}`" if f.get("lineHint") else ""
+                lines.append(f"##### {i}. `{f['file']}`{location}")
                 lines.append("")
-            if f.get("recommendation"):
-                lines.append(f"**Recommendation.** {f['recommendation']}")
+                lines.append(f"**Issue.** {f['issue']}")
                 lines.append("")
+                if f.get("reasoning"):
+                    lines.append(f"**Reasoning.** {f['reasoning']}")
+                    lines.append("")
+                if f.get("recommendation"):
+                    lines.append(f"**Recommendation.** {f['recommendation']}")
+                    lines.append("")
 
     return "\n".join(lines) + "\n"
