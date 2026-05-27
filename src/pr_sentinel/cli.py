@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 
-from pr_sentinel import __version__, cache, chunker, git_diff, diff_parser, orchestrator, report_generator
+from pr_sentinel import __version__, cache, chunker, git_diff, diff_parser, orchestrator, report_generator, router
 from pr_sentinel.agents.summary_agent import SummaryAgent
 from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel.config import (
@@ -21,6 +21,7 @@ from pr_sentinel.config import (
     DEFAULT_OUT_DIR,
     DEFAULT_PRUNE_AGE,
     DEFAULT_REPORT_FORMAT,
+    DEFAULT_SUMMARY_MODEL,
     DEFAULT_TIMEOUT,
     RISK_STYLE,
     SOURCE_DIFF_FILENAME,
@@ -103,18 +104,26 @@ def _files_table(files: list[dict]) -> Table:
 
 def _run_plan_panel(
     total_diff_size: int,
-    chunk_count: int,
+    per_agent_plan: list[tuple[str, int, int]],
     chunk_budget: int,
-    available: list[str],
     max_parallel: int,
     timeout: int,
 ) -> Panel:
+    """per_agent_plan: list of (display_name, file_count, chunk_count)."""
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold cyan", no_wrap=True)
     grid.add_column()
     grid.add_row("Diff size", f"{total_diff_size:,} chars")
-    grid.add_row("Chunks", f"{chunk_count}  [dim](budget {chunk_budget:,} chars)[/]")
-    grid.add_row("Agents", ", ".join(available))
+    grid.add_row("Chunk budget", f"{chunk_budget:,} chars")
+    for name, file_count, chunk_count in per_agent_plan:
+        if chunk_count == 0:
+            detail = "[dim]no relevant files — skipped[/]"
+        else:
+            detail = (
+                f"{file_count} file(s) → {chunk_count} chunk"
+                f"{'s' if chunk_count != 1 else ''}"
+            )
+        grid.add_row(name, detail)
     grid.add_row("Max parallel", str(max_parallel))
     grid.add_row("Timeout", f"{timeout}s")
     return Panel(
@@ -419,20 +428,40 @@ def review(
         )
 
     total_diff_size = sum(len(f["diff"]) for f in files)
-    chunks = chunker.chunk_files(files, budget=chunk_budget)
-    chunk_count = len(chunks)
+
+    # Per-agent diffs: each agent only sees files its routing table marks as
+    # relevant. Each agent's file list is then chunked independently.
+    files_by_agent: dict[str, list[dict]] = {
+        k: router.files_for_agent(files, k) for k in available
+    }
+    chunks_by_agent: dict[str, list[list[dict]]] = {
+        k: chunker.chunk_files(files_by_agent[k], budget=chunk_budget) for k in available
+    }
+
+    agent_displays = [AGENT_REGISTRY[k].display_name for k in available]
+    per_agent_plan = [
+        (
+            AGENT_REGISTRY[k].display_name,
+            len(files_by_agent[k]),
+            len(chunks_by_agent[k]),
+        )
+        for k in available
+    ]
 
     console.print(
         _run_plan_panel(
-            total_diff_size, chunk_count, chunk_budget, available, max_parallel, timeout
+            total_diff_size, per_agent_plan, chunk_budget, max_parallel, timeout
         )
     )
 
-    agent_displays = [AGENT_REGISTRY[k].display_name for k in available]
     errors: list[tuple[str, str]] = []
     use_cache = not no_cache
     cache.reset_stats()
     cache.auto_prune()
+
+    chunk_count_by_display = {
+        AGENT_REGISTRY[k].display_name: len(chunks_by_agent[k]) for k in available
+    }
 
     with Progress(
         TextColumn("[bold]{task.fields[name]:<22}[/]"),
@@ -442,9 +471,18 @@ def review(
         console=console,
     ) as progress:
         task_ids = {
-            name: progress.add_task("", total=chunk_count, name=name, status="")
+            name: progress.add_task(
+                "",
+                total=max(chunk_count_by_display[name], 1),
+                name=name,
+                status="",
+            )
             for name in agent_displays
         }
+        # Mark skipped agents (0 chunks) as already complete.
+        for name in agent_displays:
+            if chunk_count_by_display[name] == 0:
+                progress.update(task_ids[name], completed=1, status="[dim]skipped[/]")
 
         def _on_chunk_done(name: str, _idx: int, _total: int) -> None:
             progress.update(task_ids[name], advance=1)
@@ -456,7 +494,7 @@ def review(
 
         agent_results = orchestrator.run_agents(
             agent_keys=available,
-            chunks=chunks,
+            chunks_by_agent=chunks_by_agent,
             on_finish=_on_finish,
             on_chunk_done=_on_chunk_done,
             model=model,
@@ -466,8 +504,11 @@ def review(
         )
 
         for r in agent_results:
-            if not r.get("failed"):
-                progress.update(task_ids[r["agent"]], status="[bold green]OK[/]")
+            if r.get("failed"):
+                continue
+            if chunk_count_by_display.get(r["agent"], 0) == 0:
+                continue  # keep "skipped" status
+            progress.update(task_ids[r["agent"]], status="[bold green]OK[/]")
 
     raw_findings = [
         f
@@ -482,7 +523,7 @@ def review(
             try:
                 cleaned_findings, removed_count = SummaryAgent().run(
                     findings=raw_findings,
-                    model=model,
+                    model=DEFAULT_SUMMARY_MODEL,
                     timeout=timeout,
                     use_cache=use_cache,
                 )
