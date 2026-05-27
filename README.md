@@ -16,6 +16,9 @@ git diff main...HEAD
 [ chunker ] ── packs files into ≤100k-char chunks (hybrid batching)
         │
         ▼
+[ router ] ── per chunk, decides which agents are relevant for those file types
+        │
+        ▼
 [ orchestrator ] ── runs (agent × chunk) tasks in a bounded thread pool
         │
         ├── Security Agent      (claude -p prompts/security.md)
@@ -35,6 +38,34 @@ git diff main...HEAD
         ▼
 reports/report.json + reports/review-report.md
 ```
+
+## File-type routing
+
+Not every agent has something useful to say about every file. PR Sentinel skips agents that have nothing meaningful to contribute to a chunk's file types, reducing token usage with no loss in review quality.
+
+| File type | Security | Quality | Performance | Testing |
+|---|:---:|:---:|:---:|:---:|
+| `*.cs` (source) | ✅ | ✅ | ✅ | ✅ |
+| `*Test*.cs`, `*Spec.cs`, `*Fixture.cs` | ✅ | ✅ | — | ✅ |
+| `*.cshtml`, `*.razor`, `*.html` | ✅ | ✅ | — | — |
+| `*.js`, `*.ts` | ✅ | ✅ | ✅ | ✅ |
+| `*.css`, `*.scss`, `*.less` | — | ✅ | — | — |
+| `*.svg` | ✅ | — | — | — |
+| `*.csproj`, `*.props`, `*.targets` | ✅ | ✅ | — | — |
+| `*.sln` | — | — | — | — |
+| `appsettings*.json`, `*.yml`, `*.yaml`, `*.xml`, `*.json` | ✅ | ✅ | — | — |
+| `Dockerfile`, `*.bicep`, `*.tf` | ✅ | ✅ | — | — |
+| `*.sql` | ✅ | ✅ | ✅ | — |
+| `*.csv`, `*.tsv`, `*.resx` | ✅ | — | — | — |
+| `*.md`, `*.txt`, `*.http` | ✅ | — | — | — |
+| Unknown extension | ✅ | ✅ | ✅ | ✅ |
+
+**Three rules behind the table:**
+- Security runs on almost everything — secrets and PII appear in docs, config files, and data files.
+- Performance and Testing only run on executable code.
+- Unknown extensions always get all four agents — nothing is silently skipped.
+
+If a chunk contains mixed file types (e.g. a `.cs` file and a `.css` file together), the agents for the union of both types are run. Binary files (`*.png`, `*.dll`, `*.zip`, etc.) are dropped entirely before routing — their diffs are unreadable.
 
 ## Requirements
 
@@ -226,6 +257,7 @@ src/pr_sentinel/
 ├── chunker.py              # greedy packer to keep prompts under chunk-budget
 ├── claude_runner.py        # subprocess(claude -p) + JSON extraction + 1 retry
 ├── orchestrator.py         # parallel (agent, chunk) execution via ThreadPoolExecutor
+├── router.py               # file-type routing table — decides which agents run per chunk
 ├── cache.py                # sha256-keyed disk cache + 90-day auto-prune
 ├── report_generator.py     # build_report + JSON/Markdown writers
 ├── agents/

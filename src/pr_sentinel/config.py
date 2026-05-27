@@ -11,11 +11,12 @@ from pathlib import Path
 DEFAULT_MAX_PARALLEL = 8
 DEFAULT_TIMEOUT = 600
 DEFAULT_MODEL = "haiku"
+DEFAULT_SUMMARY_MODEL = "haiku"
 
 # --- Diff processing --------------------------------------------------------
 DEFAULT_CHUNK_BUDGET = 100_000
 DEFAULT_MAX_FILE_SIZE = 20_000
-DEFAULT_UNIFIED_CONTEXT = 10
+DEFAULT_UNIFIED_CONTEXT = 3
 
 # --- Agents -----------------------------------------------------------------
 DEFAULT_AGENTS = ["security", "quality", "performance", "testing"]
@@ -55,6 +56,14 @@ NOISE_PATTERNS = [
     "node_modules/*",
     "*/node_modules/*",
     "*/__pycache__/*",
+    # Binary files — diffs are unreadable, no agent can produce meaningful findings
+    "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ico", "*.webp", "*.bmp", "*.tiff",
+    "*.ttf", "*.woff", "*.woff2", "*.eot", "*.otf",
+    "*.mp4", "*.mp3", "*.wav", "*.avi", "*.mov", "*.webm",
+    "*.pdf",
+    "*.dll", "*.exe", "*.pdb", "*.nupkg",
+    "*.zip", "*.tar", "*.gz", "*.rar", "*.7z",
+    "*.docx", "*.xlsx", "*.pptx",
 ]
 
 # --- Cache ------------------------------------------------------------------

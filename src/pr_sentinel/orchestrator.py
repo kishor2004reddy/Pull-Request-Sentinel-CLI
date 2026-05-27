@@ -7,7 +7,7 @@ from pr_sentinel.config import DEFAULT_MAX_PARALLEL, DEFAULT_MODEL, DEFAULT_TIME
 
 def run_agents(
     agent_keys: list[str],
-    chunks: list[list[dict]],
+    chunks_by_agent: dict[str, list[list[dict]]],
     on_start: Callable[[str], None] | None = None,
     on_finish: Callable[[str, dict | Exception], None] | None = None,
     on_chunk_done: Callable[[str, int, int], None] | None = None,
@@ -17,6 +17,11 @@ def run_agents(
     use_cache: bool = True,
 ) -> list[dict]:
     """Run all (agent, chunk) tasks in parallel under a single bounded pool.
+
+    `chunks_by_agent` maps each agent_key to the list of chunks it should
+    process. Different agents may receive different chunks (file-type routing
+    happens before this step). An agent with an empty chunk list finishes
+    immediately with no findings.
 
     Returns one result dict per agent_key, in the input order. A result is either
     {"agent": name, "findings": [...]} on success or
@@ -30,10 +35,12 @@ def run_agents(
         for k in agent_keys:
             on_start(display_names[k])
 
-    total_chunks = len(chunks)
     findings_by_agent: dict[str, list[dict]] = {k: [] for k in agent_keys}
     error_by_agent: dict[str, str | None] = {k: None for k in agent_keys}
     chunks_done_by_agent: dict[str, int] = {k: 0 for k in agent_keys}
+    expected_chunks_by_agent: dict[str, int] = {
+        k: len(chunks_by_agent.get(k, [])) for k in agent_keys
+    }
     finished_signaled: set[str] = set()
 
     def _signal_finished(k: str, payload) -> None:
@@ -43,18 +50,23 @@ def run_agents(
         if on_finish:
             on_finish(display_names[k], payload)
 
-    if total_chunks == 0:
-        return [{"agent": display_names[k], "findings": []} for k in agent_keys]
+    # Agents with no routed chunks finish immediately with empty findings.
+    for k in agent_keys:
+        if expected_chunks_by_agent[k] == 0:
+            _signal_finished(k, {"agent": display_names[k], "findings": []})
 
     tasks: list[tuple[str, int, list[dict]]] = []
     for k in agent_keys:
-        for idx, chunk in enumerate(chunks, start=1):
+        for idx, chunk in enumerate(chunks_by_agent.get(k, []), start=1):
             tasks.append((k, idx, chunk))
+
+    if not tasks:
+        return [{"agent": display_names[k], "findings": []} for k in agent_keys]
 
     workers = max(1, min(max_parallel, len(tasks)))
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        future_to_meta = {}
+        future_to_meta: dict = {}
         for k, idx, chunk in tasks:
             future = pool.submit(
                 instances[k].process_chunk, chunk, model, timeout, use_cache
@@ -78,9 +90,13 @@ def run_agents(
             findings_by_agent[k].extend(chunk_findings)
             chunks_done_by_agent[k] += 1
             if on_chunk_done:
-                on_chunk_done(display_names[k], chunks_done_by_agent[k], total_chunks)
+                on_chunk_done(
+                    display_names[k],
+                    chunks_done_by_agent[k],
+                    expected_chunks_by_agent[k],
+                )
 
-            if chunks_done_by_agent[k] == total_chunks:
+            if chunks_done_by_agent[k] == expected_chunks_by_agent[k]:
                 result = {"agent": display_names[k], "findings": findings_by_agent[k]}
                 _signal_finished(k, result)
 
