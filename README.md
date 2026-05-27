@@ -10,10 +10,10 @@ No API keys. No hosted services. PR Sentinel shells out to `claude -p` and uses 
 git diff main...HEAD
         │
         ▼
-[ diff_parser ] ── filters noise (lock files, build dirs, binary files, generated)
-        │
+[ diff_parser ] ── filters built-in noise + user skip patterns
+        │             (--skip-files, .prsentinelignore)
         ▼
-[ chunker ] ── packs files into ≤60k-char chunks (hybrid batching)
+[ chunker ] ── packs files into ≤100k-char chunks (hybrid batching)
         │
         ▼
 [ router ] ── per chunk, decides which agents are relevant for those file types
@@ -30,6 +30,9 @@ git diff main...HEAD
 [ cache ] ── sha256(model + prompt) → response, on disk
                 │
                 ▼
+[ Summary Agent ] ── single claude call that dedupes/merges findings across agents
+        │             (prompts/summary.md; falls back to raw findings on failure)
+        ▼
 [ report_generator ] ── merges findings, computes risk level
         │
         ▼
@@ -126,10 +129,11 @@ Open `reports/review-report.md`.
 | `--format` | `both` | `json`, `markdown`, or `both`. |
 | `--max-file-size` | `20000` | Per-file diff size cap (chars). Larger files get truncated with a marker. |
 | `--chunk-budget` | `100000` | Max combined diff size per Claude call before chunking kicks in. |
-| `--model` | `haiku` | Claude model to use. Shortcuts: `sonnet`, `opus`, `haiku`. Or pass a full model ID such as `claude-opus-4-7`. |
+| `--model` | `haiku` | Claude model to use. Shortcuts: `sonnet`, `opus`, `haiku`. Or pass a full model ID such as `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`. Forwarded to `claude --model`. |
 | `--max-parallel` | `8` | Max concurrent `claude` calls across all (agent, chunk) pairs. |
 | `--timeout` | `600` | Per-call timeout in seconds for each `claude` subprocess. |
 | `--no-cache` | off | Bypass the response cache for this run. Successful responses are still written to the cache. |
+| `--skip-files` | — | Comma-separated glob patterns to skip on top of built-in noise filters (e.g. `"*.lock,vendor/**,fixtures/*.json"`). Combines with `.prsentinelignore` if present. |
 
 ### `pr-sentinel agents`
 
@@ -148,6 +152,29 @@ Inspect and manage the on-disk response cache.
 The cache lives at `~/.pr-sentinel/cache/` by default. Override with the `PR_SENTINEL_CACHE_DIR` environment variable. Keys are `sha256(model + prompt)`, so changing the model or any prompt content invalidates the entry automatically.
 
 **Auto-pruning.** Every `pr-sentinel review` run silently drops cache entries older than 90 days before doing any work. No flag, no output — it just keeps the cache from growing unbounded over time. The threshold is set via `AUTO_PRUNE_AGE_DAYS` in [config.py](src/pr_sentinel/config.py). Use `cache prune --older-than ...` for manual prunes at a different age.
+
+## Skipping files
+
+PR Sentinel always filters built-in noise (lock files, build/dist dirs, minified, generated). To skip *additional* files — large fixtures, vendored code, anything that wastes tokens without adding review value — use either of these:
+
+**Per-run flag**, good for one-offs:
+```bash
+pr-sentinel review --skip-files "vendor/**,fixtures/*.json,*.snap"
+```
+
+**Repo-wide ignore file**, good for project defaults — drop a `.prsentinelignore` at the repo root:
+```
+# generated docs
+docs/api/**
+
+# huge test fixtures
+tests/fixtures/large/**
+
+# vendored deps
+vendor/**
+```
+
+Syntax: one glob per line, `#` for comments, blank lines ignored. Patterns use `fnmatch` (same as the built-in noise filter), matched against both the full path and the basename. The two sources combine — flag patterns are appended to the ignore file's patterns. Skipped files are listed in the "Skipped noise file(s)" panel at the top of the run output.
 
 ## Examples
 
@@ -181,6 +208,11 @@ Force a fresh run, ignoring cached responses:
 pr-sentinel review --base main --no-cache
 ```
 
+Skip extra files for this run only:
+```bash
+pr-sentinel review --base main --skip-files "vendor/**,*.snap"
+```
+
 Prune cache entries older than a week:
 ```bash
 pr-sentinel cache prune --older-than 7d
@@ -196,7 +228,13 @@ The markdown report always emits these five sections in this fixed order, regard
 4. **Key Recommendations** — deduplicated fixes
 5. **All Findings** — per-agent summary table + full per-issue detail
 
-The JSON report contains the same data in a single structured object suitable for piping into other tools.
+The JSON report contains the same data in a single structured object suitable for piping into other tools. Key fields:
+
+- `riskLevel` — `High` / `Medium` / `Low` / `None` / `Unknown` (see table below)
+- `coverageComplete` — `false` if any agent failed during the run
+- `agentsExecuted`, `failedAgents` — who ran and who didn't
+- `findings` — flat list, sorted by severity then file
+- `rawFindingCount` — only present when the Summary Agent ran; how many findings existed before dedup
 
 ### Risk levels
 
@@ -205,8 +243,8 @@ The JSON report contains the same data in a single structured object suitable fo
 | **High** | Any High-severity finding, or 5+ Medium-severity findings |
 | **Medium** | One or more Medium-severity findings (and fewer than 5) |
 | **Low** | Only Low-severity findings |
-| **None** | No findings across all executed agents |
-| **Unknown** | All executed agents failed — risk could not be determined |
+| **None** | No findings across all executed agents (full coverage) |
+| **Unknown** | All executed agents failed, **or** some agents failed and the rest found nothing (can't call it clean with incomplete coverage) |
 
 ## Architecture
 
@@ -215,7 +253,7 @@ src/pr_sentinel/
 ├── cli.py                  # Click entrypoint + Rich UI
 ├── config.py               # tunable defaults + shared constants (single source of truth)
 ├── git_diff.py             # git rev-parse, git diff, --staged
-├── diff_parser.py          # per-file splitting + noise filter + truncation
+├── diff_parser.py          # per-file splitting + noise filter (+ --skip-files / .prsentinelignore) + truncation
 ├── chunker.py              # greedy packer to keep prompts under chunk-budget
 ├── claude_runner.py        # subprocess(claude -p) + JSON extraction + 1 retry
 ├── orchestrator.py         # parallel (agent, chunk) execution via ThreadPoolExecutor
@@ -227,12 +265,14 @@ src/pr_sentinel/
 │   ├── security_agent.py
 │   ├── quality_agent.py
 │   ├── performance_agent.py
-│   └── testing_agent.py
+│   ├── testing_agent.py
+│   └── summary_agent.py    # post-processes findings: dedupe/merge across agents
 └── prompts/
     ├── security.md
     ├── quality.md
     ├── performance.md
-    └── testing.md
+    ├── testing.md
+    └── summary.md
 
 tests/
 ├── test_diff_parser.py
@@ -255,7 +295,9 @@ pytest -q
 
 **Slow runs** — large diffs trigger chunking. Each chunk is one Claude call per agent. Reduce scope with `--agents security` if you only want one perspective, or with `--max-file-size` to truncate huge files. The cache amortizes repeat runs against the same diff.
 
-**Lock files / minified files showing up** — they shouldn't. If they do, add the pattern to `NOISE_PATTERNS` in [config.py](src/pr_sentinel/config.py).
+**Lock files / minified files showing up** — they shouldn't. If they do, add the pattern to `NOISE_PATTERNS` in [config.py](src/pr_sentinel/config.py), or skip on a per-project basis with `.prsentinelignore` (see [Skipping files](#skipping-files)).
+
+**Want to skip a non-noise file** (huge fixture, vendored dep, generated snapshot)? Use `--skip-files "pat1,pat2"` for a one-off, or commit a `.prsentinelignore` for project-wide defaults.
 
 ## Notes & limitations
 
@@ -263,6 +305,7 @@ pytest -q
 - `lineHint` is approximate — unified diffs have hunk headers, not absolute line numbers. The prompt asks Claude for a *description* of the location rather than a hallucinated number.
 - Agents cannot read other files in the repo. Review depth is limited to what's visible in the diff itself.
 - If any one chunk fails for an agent (timeout, exit code, unparseable JSON after retry), that agent is marked failed for the run and its partial findings are discarded. Other agents continue.
+- The Summary Agent makes one additional `claude` call per run to deduplicate and merge findings across the four review agents. If it fails (timeout, bad JSON), the report falls back to the raw findings — nothing is lost.
 
 ## License
 
