@@ -22,6 +22,7 @@ from pr_sentinel.config import (
     DEFAULT_PRUNE_AGE,
     DEFAULT_REPORT_FORMAT,
     DEFAULT_TIMEOUT,
+    IGNORE_FILE_NAME,
     RISK_STYLE,
     SOURCE_DIFF_FILENAME,
     VALID_AGENTS,
@@ -335,6 +336,17 @@ def main() -> None:
         "Successful responses still get written to the cache."
     ),
 )
+@click.option(
+    "--skip-files",
+    "skip_files",
+    default="",
+    help=(
+        "Comma-separated glob patterns of files to skip on top of built-in noise filters "
+        "(e.g. --skip-files \"*.lock,vendor/**,fixtures/*.json\"). "
+        f"A `{IGNORE_FILE_NAME}` file at the repo root is also read if present "
+        "(one pattern per line, # for comments)."
+    ),
+)
 def review(
     base: str,
     head: str,
@@ -350,6 +362,7 @@ def review(
     max_parallel: int,
     timeout: int,
     no_cache: bool,
+    skip_files: str,
 ) -> None:
     """Review changes and write a structured report."""
     agent_list = _parse_agents(agents)
@@ -391,7 +404,18 @@ def review(
         )
     )
 
-    files = diff_parser.parse(raw_diff, max_file_size=max_file_size)
+    ignore_root = repo_dir if repo_dir else Path.cwd()
+    extra_skip_patterns = diff_parser.load_ignore_file(ignore_root / IGNORE_FILE_NAME)
+    if skip_files:
+        extra_skip_patterns.extend(
+            p.strip() for p in skip_files.split(",") if p.strip()
+        )
+
+    files = diff_parser.parse(
+        raw_diff,
+        max_file_size=max_file_size,
+        extra_skip_patterns=extra_skip_patterns,
+    )
     kept_paths = {f["filePath"] for f in files}
     skipped_noise = [
         p for p in diff_parser.all_paths(raw_diff) if p not in kept_paths

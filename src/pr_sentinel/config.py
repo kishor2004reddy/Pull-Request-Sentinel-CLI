@@ -29,6 +29,7 @@ DEFAULT_OUT_DIR = Path("./reports")
 REPORT_JSON_FILENAME = "report.json"
 REPORT_MARKDOWN_FILENAME = "review-report.md"
 SOURCE_DIFF_FILENAME = "source.diff"
+IGNORE_FILE_NAME = ".prsentinelignore"
 
 # --- Noise filtering --------------------------------------------------------
 NOISE_PATTERNS = [

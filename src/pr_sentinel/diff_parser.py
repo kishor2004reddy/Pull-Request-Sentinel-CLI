@@ -1,6 +1,7 @@
 import fnmatch
 import posixpath
 import re
+from pathlib import Path
 
 from pr_sentinel.config import DEFAULT_MAX_FILE_SIZE, NOISE_PATTERNS
 
@@ -13,12 +14,25 @@ def all_paths(raw_diff: str) -> list[str]:
     return [m.group(2) for m in _DIFF_HEADER.finditer(raw_diff)]
 
 
-def _is_noise(path: str) -> bool:
+def load_ignore_file(path: Path) -> list[str]:
+    """Read a .prsentinelignore-style file: one glob per line, # comments, blank lines skipped."""
+    if not path.is_file():
+        return []
+    patterns: list[str] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        patterns.append(stripped)
+    return patterns
+
+
+def _matches_any(path: str, patterns: list[str]) -> bool:
     norm = path.replace("\\", "/")
     name = posixpath.basename(norm)
     return any(
         fnmatch.fnmatch(norm, pat) or fnmatch.fnmatch(name, pat)
-        for pat in NOISE_PATTERNS
+        for pat in patterns
     )
 
 
@@ -44,14 +58,22 @@ def _count_lines(chunk: str) -> tuple[int, int]:
     return added, removed
 
 
-def parse(raw_diff: str, max_file_size: int = DEFAULT_MAX_FILE_SIZE) -> list[dict]:
-    """Split a unified diff into per-file records, filtering noise."""
+def parse(
+    raw_diff: str,
+    max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+    extra_skip_patterns: list[str] | None = None,
+) -> list[dict]:
+    """Split a unified diff into per-file records, filtering noise and user-skipped paths."""
     if not raw_diff.strip():
         return []
 
     matches = list(_DIFF_HEADER.finditer(raw_diff))
     if not matches:
         return []
+
+    skip_patterns = list(NOISE_PATTERNS)
+    if extra_skip_patterns:
+        skip_patterns.extend(extra_skip_patterns)
 
     files: list[dict] = []
     for idx, match in enumerate(matches):
@@ -60,7 +82,7 @@ def parse(raw_diff: str, max_file_size: int = DEFAULT_MAX_FILE_SIZE) -> list[dic
         chunk = raw_diff[start:end]
         path = match.group(2)
 
-        if _is_noise(path):
+        if _matches_any(path, skip_patterns):
             continue
 
         added, removed = _count_lines(chunk)
