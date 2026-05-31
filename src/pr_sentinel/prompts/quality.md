@@ -28,7 +28,6 @@ Return ONLY a single JSON object. No prose. No code fences. No markdown.
 
 Schema:
 {
-  "agent": "Code Quality Agent",
   "findings": [
     {
       "severity": "Low" | "Medium" | "High",
@@ -42,7 +41,7 @@ Schema:
 }
 
 If you find no issues, return:
-{ "agent": "Code Quality Agent", "findings": [] }
+{ "findings": [] }
 
 Diff:
 <<<DIFF>>>

@@ -30,7 +30,6 @@ Return ONLY a single JSON object. No prose. No code fences. No markdown.
 
 Schema:
 {
-  "agent": "Performance Agent",
   "findings": [
     {
       "severity": "Low" | "Medium" | "High",
@@ -44,7 +43,7 @@ Schema:
 }
 
 If you find no issues, return:
-{ "agent": "Performance Agent", "findings": [] }
+{ "findings": [] }
 
 Diff:
 <<<DIFF>>>

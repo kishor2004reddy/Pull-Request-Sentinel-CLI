@@ -7,6 +7,10 @@ from pr_sentinel.config import DEFAULT_MAX_FILE_SIZE, NOISE_PATTERNS
 
 _DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
 _TRUNCATION_NOTE = "\n\n[... diff truncated by pr-sentinel: exceeded --max-file-size ...]\n"
+_GIT_META = re.compile(
+    r"^(?:diff --git [^\n]+|index [0-9a-f]+\.\.[0-9a-f][^\n]*|--- [^\n]+|\+\+\+ [^\n]+)\n",
+    re.MULTILINE,
+)
 
 
 def all_paths(raw_diff: str) -> list[str]:
@@ -34,6 +38,22 @@ def _matches_any(path: str, patterns: list[str]) -> bool:
         fnmatch.fnmatch(norm, pat) or fnmatch.fnmatch(name, pat)
         for pat in patterns
     )
+
+
+def _strip_git_meta(chunk: str) -> str:
+    """Remove redundant git header lines that precede the first hunk.
+
+    `diff --git`, `index`, `--- a/`, `+++ b/` lines are fully covered by the
+    FILE: header that format_diff_block prepends — stripping them cuts input
+    tokens without losing any information the agents need.
+    `new file mode`, `deleted file mode`, `rename from/to` lines are preserved
+    because they aren't matched by _GIT_META.
+    """
+    first_hunk = chunk.find("\n@@")
+    if first_hunk == -1:
+        return chunk
+    header = _GIT_META.sub("", chunk[: first_hunk + 1])
+    return header + chunk[first_hunk + 1 :]
 
 
 def _classify(chunk: str) -> str:
@@ -87,6 +107,8 @@ def parse(
 
         added, removed = _count_lines(chunk)
         change_type = _classify(chunk)
+
+        chunk = _strip_git_meta(chunk)
 
         if len(chunk) > max_file_size:
             chunk = chunk[:max_file_size] + _TRUNCATION_NOTE
