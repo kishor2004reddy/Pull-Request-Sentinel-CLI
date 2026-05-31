@@ -1,4 +1,5 @@
 import json
+import re
 from importlib import resources
 
 from pr_sentinel import claude_runner
@@ -10,6 +11,36 @@ _VALID_AGENT_NAMES = {
     "Performance Agent",
     "Testing Agent",
 }
+
+
+_NUMBERED_ITEM = re.compile(r"(?<!\n)( +)(\d+\. )")
+
+
+def _fix_numbered_list(text: str) -> str:
+    """Ensure each numbered list item starts on its own line.
+
+    The model sometimes runs items together inline ("1. foo 2. bar") despite
+    being instructed to use newlines. This normalizes any whitespace run
+    immediately before "N. " (N >= 2) to a single newline.
+    Only fires when the text actually starts with a numbered item.
+    """
+    if not re.match(r"^\d+\. ", text):
+        return text
+    return _NUMBERED_ITEM.sub(r"\n\2", text)
+
+
+def _canonical_key(f: dict) -> tuple[str, ...]:
+    """Stable, content-based sort key so an identical set of findings always
+    serializes to the same prompt (and thus the same cache key)."""
+    return (
+        str(f.get("file", "")),
+        str(f.get("lineHint", "")),
+        str(f.get("agent", "")),
+        str(f.get("severity", "")),
+        str(f.get("issue", "")),
+        str(f.get("reasoning", "")),
+        str(f.get("recommendation", "")),
+    )
 
 
 class SummaryAgent:
@@ -37,6 +68,12 @@ class SummaryAgent:
         if not findings:
             return findings, 0
 
+        # Canonicalize order before building the prompt. Upstream agents emit
+        # findings in chunk-completion order (orchestrator uses as_completed),
+        # which shuffles run-to-run. Without this, an identical set of findings
+        # produces a different prompt each run and never hits the summary cache.
+        ordered = sorted(findings, key=_canonical_key)
+
         # Include reasoning — it is the strongest signal for deciding whether two
         # differently-worded findings describe the same underlying problem.
         slim = [
@@ -50,7 +87,7 @@ class SummaryAgent:
                 "reasoning": f.get("reasoning", ""),
                 "recommendation": f.get("recommendation", ""),
             }
-            for i, f in enumerate(findings)
+            for i, f in enumerate(ordered)
         ]
         findings_json = json.dumps(slim, separators=(",", ":"))
         prompt = self._template.replace("<<<FINDINGS>>>", findings_json)
@@ -60,13 +97,20 @@ class SummaryAgent:
                 prompt, timeout=timeout, model=model, use_cache=use_cache
             )
         except Exception:
-            return findings, 0
+            return ordered, 0
 
-        cleaned = self._validate(response, findings)
-        removed = max(0, len(findings) - len(cleaned))
+        cleaned = self._validate(response, ordered)
+        removed = max(0, len(ordered) - len(cleaned))
         return cleaned, removed
 
     def _validate(self, response: dict, original: list[dict]) -> list[dict]:
+        """Reconstruct surviving findings from the originals by `_id`.
+
+        The model returns only the winning `_id` per finding, plus optional
+        `file`/`lineHint`/`recommendation` overrides for Rule 2/3 consolidations.
+        Every verbatim field is restored from `original[_id]`, so the model can
+        never corrupt or hallucinate them — and its output stays tiny.
+        """
         raw = response.get("findings", [])
         if not isinstance(raw, list) or not raw:
             return original
@@ -75,32 +119,38 @@ class SummaryAgent:
         for f in raw:
             if not isinstance(f, dict):
                 continue
-            issue = str(f.get("issue", "")).strip()
-            if not issue:
-                continue
-            agent = str(f.get("agent", "")).strip()
+            source_id = f.get("_id")
+            if not isinstance(source_id, int) or not (0 <= source_id < len(original)):
+                continue  # cannot reconstruct without a valid source finding
+
+            base = original[source_id]
+            agent = base.get("agent", "")
             if agent not in _VALID_AGENT_NAMES:
                 agent = "Code Quality Agent"
-            severity = f.get("severity", "Low")
+            severity = base.get("severity", "Low")
             if severity not in VALID_SEVERITIES:
                 severity = "Low"
 
-            # Restore reasoning from the original finding identified by _id.
-            # The LLM preserves _id from the primary/winning finding when merging.
-            source_id = f.get("_id")
-            if isinstance(source_id, int) and 0 <= source_id < len(original):
-                reasoning = original[source_id].get("reasoning", "")
-            else:
-                reasoning = ""
+            # Restore verbatim fields from the winner; apply an override only
+            # when the model explicitly supplied one (Rule 2/3).
+            file = str(f["file"]) if "file" in f else str(base.get("file", "<unknown>"))
+            line_hint = (
+                str(f["lineHint"]) if "lineHint" in f else str(base.get("lineHint", ""))
+            )
+            recommendation = (
+                _fix_numbered_list(str(f["recommendation"]).strip())
+                if "recommendation" in f
+                else str(base.get("recommendation", "")).strip()
+            )
 
             cleaned.append({
                 "agent": agent,
                 "severity": severity,
-                "file": str(f.get("file", "<unknown>")),
-                "lineHint": str(f.get("lineHint", "")),
-                "issue": issue,
-                "reasoning": reasoning,
-                "recommendation": str(f.get("recommendation", "")).strip(),
+                "file": file,
+                "lineHint": line_hint,
+                "issue": str(base.get("issue", "")).strip(),
+                "reasoning": base.get("reasoning", ""),
+                "recommendation": recommendation,
             })
 
         if not cleaned:

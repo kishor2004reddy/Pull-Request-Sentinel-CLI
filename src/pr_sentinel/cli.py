@@ -1,4 +1,6 @@
 import re
+import threading
+import time
 from pathlib import Path
 
 import click
@@ -543,7 +545,26 @@ def review(
     cleaned_findings: list[dict] | None = None
     removed_count = 0
     if raw_findings:
-        with console.status("[dim]Summary Agent cleaning findings...[/]"):
+        finding_count = len(raw_findings)
+        file_count = len({f["file"] for f in raw_findings})
+        _summary_messages = [
+            f"[dim]Summary Agent: analysing {finding_count} findings across {file_count} file(s)...[/]",
+            "[dim]Summary Agent: deduplicating cross-agent findings...[/]",
+            "[dim]Summary Agent: consolidating same-pattern issues...[/]",
+            "[dim]Summary Agent: finalising cleaned report...[/]",
+        ]
+
+        _stop_cycling = threading.Event()
+
+        def _cycle_status(status):
+            idx = 0
+            while not _stop_cycling.wait(timeout=3):
+                idx = (idx + 1) % len(_summary_messages)
+                status.update(_summary_messages[idx])
+
+        with console.status(_summary_messages[0]) as _status:
+            _t = threading.Thread(target=_cycle_status, args=(_status,), daemon=True)
+            _t.start()
             try:
                 cleaned_findings, removed_count = SummaryAgent().run(
                     findings=raw_findings,
@@ -553,6 +574,9 @@ def review(
                 )
             except Exception as e:
                 console.print(f"[yellow]Summary Agent skipped: {e}[/]")
+            finally:
+                _stop_cycling.set()
+                _t.join()
 
     report = report_generator.build_report(
         agent_results=agent_results,

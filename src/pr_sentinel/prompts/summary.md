@@ -22,7 +22,7 @@ Two findings are duplicates when they point at the **same underlying defect**, r
 - Same `file` AND the `recommendation` would be satisfied by the same code edit.
 - Same `file` AND both findings name the same function, variable, or code construct.
 
-**Output:** copy the winner's `agent`, `file`, `lineHint`, `issue`, and `recommendation` **verbatim** — do not paraphrase, shorten, or merge text from losing findings into them.
+**Output:** emit only the winner's `_id`. The caller restores `agent`, `severity`, `file`, `lineHint`, `issue`, and `recommendation` **verbatim** from that input finding — do NOT echo them back.
 
 **Not a duplicate — keep both:**
 - Same pattern in **different functions/methods** of the same file (e.g. missing nil check in `GetUser` vs. missing nil check in `LoadConfig`).
@@ -37,14 +37,14 @@ When the call is close, lean toward merging if all three of `file`, root cause (
 
 If **2 or more** findings describe the same problem pattern across **different files** (e.g. "missing input validation" reported in 3 different endpoint files), merge them into ONE finding.
 
-This is one of two rules (along with Rule 3) where you **rewrite the `recommendation`** rather than copy it verbatim. Do not rewrite any other field.
+This is one of two rules (along with Rule 3) where you **rewrite the `recommendation`** rather than let the caller restore it. You also override `file` and `lineHint` here.
 
-**Output:**
-- `_id`, `agent`, `severity` → from the winner (per the picking rule above).
-- `issue` → copy the winner's `issue` verbatim.
+**Output:** emit the winner's `_id` plus these overrides:
 - `file` → `"(multiple files)"`.
 - `lineHint` → `""` (empty string).
-- `recommendation` → a numbered list, one entry per input finding in the group, each formatted as `N. <file path> — <that finding's recommendation text, preserved>`. Do not summarize or trim the per-file recommendations.
+- `recommendation` → a newline-separated numbered list, one entry per input finding in the group, each formatted as `N. <file path> — <that finding's recommendation text, preserved>`. Each item MUST be on its own line — use `\n` between items in the JSON string. Do not summarize or trim the per-file recommendations.
+
+`agent`, `severity`, and `issue` are still restored from the winner — do NOT echo them.
 
 Do NOT consolidate across files when the findings have **different root causes** that merely look similar on the surface.
 
@@ -56,11 +56,11 @@ If multiple findings in the same file all stem from one root cause but each name
 
 This is the other rule where you **rewrite the `recommendation`**.
 
-**Output:**
-- `_id`, `agent`, `severity`, `file` → from the winner.
-- `issue` → copy the winner's `issue` verbatim.
+**Output:** emit the winner's `_id` plus these overrides:
 - `lineHint` → the winner's `lineHint` if all instances cluster near it; otherwise `""`.
-- `recommendation` → a numbered list, one entry per input finding in the group, each formatted as `N. <lineHint or location> — <that finding's recommendation text, preserved>`. Do not summarize or trim.
+- `recommendation` → a newline-separated numbered list, one entry per input finding in the group, each formatted as `N. <lineHint or location> — <that finding's recommendation text, preserved>`. Each item MUST be on its own line — use `\n` between items in the JSON string. Do not summarize or trim.
+
+`agent`, `severity`, `file`, and `issue` are still restored from the winner — do NOT echo them.
 
 If the findings have the same `lineHint` and the same recommendation, treat them as a Rule 1 duplicate instead.
 
@@ -80,13 +80,10 @@ If a finding mixes noise with a real issue, keep it. Dropped findings also count
 ## Hard constraints
 
 - NEVER invent findings not present in the input.
-- NEVER change `agent`, `severity`, `file`, `lineHint`, or `issue` of a surviving finding (you may only *select* a winner — never rewrite these fields).
-- `recommendation` may ONLY be rewritten under Rule 2 or Rule 3, and only in the structured numbered-list form described there. Under every other rule, copy the winner's `recommendation` verbatim.
+- For each surviving finding, output ONLY the winner's `_id` and any overrides a rule explicitly requires. The caller restores `agent`, `severity`, `file`, `lineHint`, `issue`, `reasoning`, and `recommendation` from the input finding with that `_id`. Never echo a field you are not overriding.
+- The ONLY fields you may override are `file` and `lineHint` (Rule 2 only), `lineHint` (Rule 3 only), and `recommendation` (Rule 2 and Rule 3 only). Under every other rule, output `_id` alone.
 - NEVER drop a finding unless it is a confirmed duplicate (Rules 1–3) or pure linter noise (Rule 4).
 - Every output finding's `_id` MUST exist in the input.
-- `agent` must be exactly one of: `"Security Agent"`, `"Code Quality Agent"`, `"Performance Agent"`, `"Testing Agent"`.
-- `severity` must be exactly one of: `"Low"`, `"Medium"`, `"High"`.
-- Do NOT include `reasoning` in the output (the caller restores it from the input via `_id`).
 
 ---
 
@@ -94,21 +91,23 @@ If a finding mixes noise with a real issue, keep it. Dropped findings also count
 
 Return ONLY a single JSON object. No prose. No code fences. No markdown.
 
+Keep the output as small as possible: emit `_id` alone for every finding except where Rule 2 or Rule 3 requires an override.
+
 Schema:
 {
   "merged": <integer — total findings removed via dedup, consolidation, or noise drop; 0 if nothing changed>,
   "findings": [
     {
-      "_id": <integer — _id of the winning input finding>,
-      "agent": "Security Agent" | "Code Quality Agent" | "Performance Agent" | "Testing Agent",
-      "severity": "Low" | "Medium" | "High",
-      "file": "<file path, or '(multiple files)' if consolidated under Rule 2>",
-      "lineHint": "<location, or empty string>",
-      "issue": "<one-sentence problem statement from the winning finding, verbatim>",
-      "recommendation": "<winner's recommendation verbatim, OR a numbered list under Rule 2/3>"
+      "_id": <integer — _id of the winning input finding (REQUIRED)>,
+      "file": "<OPTIONAL — only under Rule 2: '(multiple files)'>",
+      "lineHint": "<OPTIONAL — only under Rule 2 or 3>",
+      "recommendation": "<OPTIONAL — only under Rule 2 or 3: the numbered list>"
     }
   ]
 }
+
+Example (two kept/deduped findings and one Rule 2 consolidation with three files):
+{"merged":4,"findings":[{"_id":0},{"_id":7},{"_id":3,"file":"(multiple files)","lineHint":"","recommendation":"1. a.py — validate input here\n2. b.py — validate input here\n3. c.py — validate input here"}]}
 
 Findings to clean:
 <<<FINDINGS>>>
