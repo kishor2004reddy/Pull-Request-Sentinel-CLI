@@ -129,8 +129,8 @@ Open `reports/review-report.md`.
 | `--format` | `both` | `json`, `markdown`, or `both`. |
 | `--max-file-size` | `20000` | Per-file diff size cap (chars). Larger files get truncated with a marker. |
 | `--chunk-budget` | `100000` | Max combined diff size per Claude call before chunking kicks in. |
-| `--model` | `haiku` | Claude model to use. Shortcuts: `sonnet`, `opus`, `haiku`. Or pass a full model ID such as `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`. Forwarded to `claude --model`. |
-| `--max-parallel` | `8` | Max concurrent `claude` calls across all (agent, chunk) pairs. |
+| `--model` | `sonnet` | Claude model to use. Shortcuts: `sonnet`, `opus`, `haiku`. Or pass a full model ID such as `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`. Forwarded to `claude --model`. |
+| `--max-parallel` | `12` | Max concurrent `claude` calls across all (agent, chunk) pairs. |
 | `--timeout` | `600` | Per-call timeout in seconds for each `claude` subprocess. |
 | `--no-cache` | off | Bypass the response cache for this run. Successful responses are still written to the cache. |
 | `--skip-files` | — | Comma-separated glob patterns to skip on top of built-in noise filters (e.g. `"*.lock,vendor/**,fixtures/*.json"`). Combines with `.prsentinelignore` if present. |
