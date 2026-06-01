@@ -8,9 +8,9 @@ where they are used.
 from pathlib import Path
 
 # --- Orchestration / claude execution ---------------------------------------
-DEFAULT_MAX_PARALLEL = 8
+DEFAULT_MAX_PARALLEL = 12
 DEFAULT_TIMEOUT = 600
-DEFAULT_MODEL = "haiku"
+DEFAULT_MODEL = "sonnet"
 DEFAULT_SUMMARY_MODEL = "haiku"
 
 # --- Diff processing --------------------------------------------------------

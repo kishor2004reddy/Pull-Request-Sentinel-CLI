@@ -322,7 +322,7 @@ def main() -> None:
     show_default=True,
     help=(
         "Max concurrent claude calls across all (agent, chunk) pairs. "
-        "Default 8 covers 1-2 chunk runs fully and gives ~2x speedup on large diffs. "
+        f"Default {DEFAULT_MAX_PARALLEL} covers 1-2 chunk runs fully and gives ~2x speedup on large diffs. "
         "Lower (4-6) if you're rate-limited; higher (12-16) on CI boxes with headroom."
     ),
 )

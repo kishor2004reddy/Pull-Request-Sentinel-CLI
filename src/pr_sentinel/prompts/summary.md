@@ -101,7 +101,7 @@ Schema:
       "_id": <integer — _id of the winning input finding (REQUIRED)>,
       "file": "<OPTIONAL — only under Rule 2: '(multiple files)'>",
       "lineHint": "<OPTIONAL — only under Rule 2 or 3>",
-      "recommendation": "<OPTIONAL — only under Rule 2 or 3: the numbered list>"
+      "recommendation": "<OPTIONAL — only under Rule 2 or 3: the numbered list where each item MUST be on its own line — use `\n` between items in the JSON string. Do not summarize or trim>"
     }
   ]
 }

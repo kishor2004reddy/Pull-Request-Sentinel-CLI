@@ -325,10 +325,22 @@ def _render_markdown(report: dict) -> str:
                 lines.append(f"**Issue.** {f['issue']}")
                 lines.append("")
                 if f.get("reasoning"):
-                    lines.append(f"**Reasoning.** {f['reasoning']}")
+                    reasoning = f["reasoning"]
+                    if "\n" in reasoning:
+                        lines.append("**Reasoning.**")
+                        lines.append("")
+                        lines.append(reasoning)
+                    else:
+                        lines.append(f"**Reasoning.** {reasoning}")
                     lines.append("")
                 if f.get("recommendation"):
-                    lines.append(f"**Recommendation.** {f['recommendation']}")
+                    rec = f["recommendation"]
+                    if "\n" in rec:
+                        lines.append("**Recommendation.**")
+                        lines.append("")
+                        lines.append(rec)
+                    else:
+                        lines.append(f"**Recommendation.** {rec}")
                     lines.append("")
 
     return "\n".join(lines) + "\n"
