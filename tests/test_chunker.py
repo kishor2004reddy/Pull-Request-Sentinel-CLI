@@ -1,4 +1,4 @@
-from pr_sentinel import chunker
+from pr_sentinel.diff import chunker
 
 
 def _file(path: str, size: int) -> dict:

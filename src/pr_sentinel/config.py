@@ -7,11 +7,37 @@ where they are used.
 """
 from pathlib import Path
 
-# --- Orchestration / claude execution ---------------------------------------
+# --- Orchestration / provider execution -------------------------------------
 DEFAULT_MAX_PARALLEL = 12
 DEFAULT_TIMEOUT = 600
+
+# --- Providers ---------------------------------------------------------------
+# A provider is an AI CLI we shell out to. Each has its own model namespace,
+# so the default model is resolved *per provider* (see default_model_for).
+DEFAULT_PROVIDER = "claude"
+VALID_PROVIDERS = {"claude", "copilot"}
+
+# Claude Code CLI defaults (shortcuts understood by `claude --model`).
 DEFAULT_MODEL = "sonnet"
 DEFAULT_SUMMARY_MODEL = "haiku"
+
+# GitHub Copilot CLI defaults. Copilot uses a different model namespace
+# (e.g. claude-haiku-4.5, claude-sonnet-4.5, gpt-5). claude-haiku-4.5 is
+# Copilot's own built-in default; users override with --model.
+DEFAULT_COPILOT_MODEL = "claude-haiku-4.5"
+DEFAULT_COPILOT_SUMMARY_MODEL = "claude-haiku-4.5"
+
+
+def default_model_for(provider: str) -> str:
+    """Default main-agent model for a provider when --model is not given."""
+    return DEFAULT_COPILOT_MODEL if provider == "copilot" else DEFAULT_MODEL
+
+
+def default_summary_model_for(provider: str) -> str:
+    """Default summary-agent model for a provider."""
+    if provider == "copilot":
+        return DEFAULT_COPILOT_SUMMARY_MODEL
+    return DEFAULT_SUMMARY_MODEL
 
 # --- Diff processing --------------------------------------------------------
 DEFAULT_CHUNK_BUDGET = 100_000
