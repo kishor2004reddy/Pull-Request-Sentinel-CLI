@@ -22,19 +22,25 @@ DEFAULT_MODEL = "sonnet"
 DEFAULT_SUMMARY_MODEL = "haiku"
 
 # GitHub Copilot CLI defaults. Copilot uses a different model namespace
-# (e.g. claude-haiku-4.5, claude-sonnet-4.5, gpt-5). claude-haiku-4.5 is
-# Copilot's own built-in default; users override with --model.
-DEFAULT_COPILOT_MODEL = "claude-haiku-4.5"
-DEFAULT_COPILOT_SUMMARY_MODEL = "claude-haiku-4.5"
+# (e.g. claude-haiku-4.5, claude-sonnet-4.5, gpt-5) whose availability depends
+# on the user's plan and isn't enumerable headlessly. So we pin nothing: None
+# means "omit --model and let the Copilot CLI use its own configured default."
+# A user-supplied --model always takes precedence.
+DEFAULT_COPILOT_MODEL = None
+DEFAULT_COPILOT_SUMMARY_MODEL = None
 
 
-def default_model_for(provider: str) -> str:
-    """Default main-agent model for a provider when --model is not given."""
+def default_model_for(provider: str) -> str | None:
+    """Default main-agent model for a provider when --model is not given.
+
+    Returns None for providers (e.g. copilot) where we defer to the CLI's own
+    default rather than asserting a model we can't verify.
+    """
     return DEFAULT_COPILOT_MODEL if provider == "copilot" else DEFAULT_MODEL
 
 
-def default_summary_model_for(provider: str) -> str:
-    """Default summary-agent model for a provider."""
+def default_summary_model_for(provider: str) -> str | None:
+    """Default summary-agent model for a provider (None defers to the CLI)."""
     if provider == "copilot":
         return DEFAULT_COPILOT_SUMMARY_MODEL
     return DEFAULT_SUMMARY_MODEL

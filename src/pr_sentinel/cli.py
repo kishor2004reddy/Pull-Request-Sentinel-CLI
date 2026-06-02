@@ -141,12 +141,11 @@ def main() -> None:
     help=(
         "Model to use, forwarded verbatim to the selected provider. "
         "claude: shortcuts sonnet, opus, haiku or a full ID like "
-        "claude-sonnet-4-6. "
-        "copilot: a Copilot model ID like claude-sonnet-4.5, claude-haiku-4.5, "
-        "gpt-5. "
-        "If omitted, each provider's own default is used "
-        f"(claude: {default_model_for('claude')}, "
-        f"copilot: {default_model_for('copilot')})."
+        "claude-sonnet-4-6 "
+        f"(default: {default_model_for('claude')}). "
+        "copilot: a Copilot model ID like claude-sonnet-4.5, gpt-5; "
+        "if omitted, the Copilot CLI picks its own configured default "
+        "(run `copilot` and type /model to see what your account can use)."
     ),
 )
 @click.option(
