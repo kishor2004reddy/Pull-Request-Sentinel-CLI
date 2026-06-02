@@ -56,7 +56,8 @@ NOISE_PATTERNS = [
     "node_modules/*",
     "*/node_modules/*",
     "*/__pycache__/*",
-    # Binary files — diffs are unreadable, no agent can produce meaningful findings
+
+    # binary files that are large but unlikely to contain PR-relevant info
     "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ico", "*.webp", "*.bmp", "*.tiff",
     "*.ttf", "*.woff", "*.woff2", "*.eot", "*.otf",
     "*.mp4", "*.mp3", "*.wav", "*.avi", "*.mov", "*.webm",
