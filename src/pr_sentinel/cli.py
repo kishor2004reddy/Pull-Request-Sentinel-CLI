@@ -51,7 +51,7 @@ def _parse_agents(value: str) -> list[str]:
 @click.group()
 @click.version_option(package_name="pr-sentinel")
 def main() -> None:
-    """PR Sentinel — local PR review via Claude Code CLI."""
+    """PR Sentinel — local PR review via GitHub Copilot or Claude Code CLI."""
 
 
 @main.command()
