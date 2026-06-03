@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-sentinel"
-description = "Local PR review tool that orchestrates Claude Code CLI agents over git diffs."
+description = "Local PR review tool that orchestrates AI agents over git diffs via GitHub Copilot or Claude Code CLI."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -12,16 +12,21 @@ authors = [
     { name = "Yarramaddi Kishor Kumar Reddy", email = "kishor04reddy@gmail.com" },
 ]
 keywords = [
+    "pr-sentinel",
+    "pull-request",
+    "pull-request-review",
     "pr-review",
     "code-review",
     "claude",
     "claude-code",
+    "github-copilot",
+    "copilot",
     "cli",
     "git-diff",
     "static-analysis",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
