@@ -121,7 +121,7 @@ def main() -> None:
     type=int,
     default=DEFAULT_CHUNK_BUDGET,
     show_default=True,
-    help="Max combined diff chars per Claude call before chunking.",
+    help="Max combined diff chars per provider call before chunking.",
 )
 @click.option(
     "--provider",
@@ -140,12 +140,9 @@ def main() -> None:
     default=None,
     help=(
         "Model to use, forwarded verbatim to the selected provider. "
-        "claude: shortcuts sonnet, opus, haiku or a full ID like "
-        "claude-sonnet-4-6 "
-        f"(default: {default_model_for('claude')}). "
-        "copilot: a Copilot model ID like claude-sonnet-4.5, gpt-5; "
-        "if omitted, the Copilot CLI picks its own configured default "
-        "(run `copilot` and type /model to see what your account can use)."
+        f"claude: shortcuts sonnet, opus, haiku or a full ID like claude-sonnet-4-6 (default: {default_model_for('claude')}). "
+        f"copilot: a Copilot model ID like claude-sonnet-4.6, gpt-5 (default: claude-sonnet-4.6). "
+        "Override with --model if your plan does not include the default."
     ),
 )
 @click.option(
@@ -154,7 +151,7 @@ def main() -> None:
     default=DEFAULT_MAX_PARALLEL,
     show_default=True,
     help=(
-        "Max concurrent claude calls across all (agent, chunk) pairs. "
+        "Max concurrent provider calls across all (agent, chunk) pairs. "
         f"Default {DEFAULT_MAX_PARALLEL} covers 1-2 chunk runs fully and gives ~2x speedup on large diffs. "
         "Lower (4-6) if you're rate-limited; higher (12-16) on CI boxes with headroom."
     ),
@@ -165,7 +162,7 @@ def main() -> None:
     default=DEFAULT_TIMEOUT,
     show_default=True,
     help=(
-        "Per-call timeout in seconds for each claude subprocess. "
+        "Per-call timeout in seconds for each provider subprocess. "
         "Default 600 (10 min) is generous; lower for fail-fast CI runs, "
         "raise if you see timeouts with opus on large chunks."
     ),

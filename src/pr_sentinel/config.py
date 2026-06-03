@@ -23,10 +23,9 @@ DEFAULT_SUMMARY_MODEL = "haiku"
 
 # GitHub Copilot CLI defaults. Copilot uses a different model namespace
 # (e.g. claude-haiku-4.5, claude-sonnet-4.5, gpt-5) whose availability depends
-# on the user's plan and isn't enumerable headlessly. So we pin nothing: None
-# means "omit --model and let the Copilot CLI use its own configured default."
+# on the user's plan and isn't enumerable headlessly.
 # A user-supplied --model always takes precedence.
-DEFAULT_COPILOT_MODEL = None
+DEFAULT_COPILOT_MODEL = "claude-sonnet-4.6"
 DEFAULT_COPILOT_SUMMARY_MODEL = None
 
 

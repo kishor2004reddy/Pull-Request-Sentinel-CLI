@@ -72,7 +72,7 @@ If a chunk contains mixed file types (e.g. a `.cs` file and a `.css` file togeth
 - Python 3.11+
 - At least one supported provider CLI, installed and authenticated:
   - **Claude** (default) — [Claude Code CLI](https://docs.claude.com/en/docs/claude-code). `claude --version` must work from your shell.
-  - **Copilot** (optional, `--provider copilot`) — [GitHub Copilot CLI](https://github.com/github/copilot-cli). `copilot --version` must work, and you must have run `copilot login`.
+  - **Copilot** (optional, `--provider copilot`) — [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli). `copilot --version` must work, and you must have run `copilot login`.
 - Git, if you want to review live branches (not required for `--diff` mode).
 
 ## Install
@@ -132,7 +132,7 @@ Open `reports/review-report.md`.
 | `--max-file-size` | `20000` | Per-file diff size cap (chars). Larger files get truncated with a marker. |
 | `--chunk-budget` | `100000` | Max combined diff size per provider call before chunking kicks in. |
 | `--provider` | `claude` | AI CLI to run the agents through. `claude` shells out to `claude -p`; `copilot` shells out to the GitHub Copilot CLI. See [Providers](#providers). |
-| `--model` | provider default | Model to use, forwarded verbatim to the selected provider. **claude:** shortcuts `sonnet`, `opus`, `haiku`, or a full ID like `claude-opus-4-8`, `claude-sonnet-4-6` (default `sonnet`). **copilot:** a Copilot model ID such as `claude-sonnet-4.5`, `gpt-5`; if omitted, the Copilot CLI uses its own configured default. |
+| `--model` | provider default | Model to use, forwarded verbatim to the selected provider. **claude:** shortcuts `sonnet`, `opus`, `haiku`, or a full ID like `claude-opus-4-8`, `claude-sonnet-4-6` (default `sonnet`). **copilot:** a Copilot model ID such as `claude-sonnet-4.6`, `gpt-5` (default `claude-sonnet-4.6`). |
 | `--max-parallel` | `12` | Max concurrent provider calls across all (agent, chunk) pairs. |
 | `--timeout` | `600` | Per-call timeout in seconds for each `claude` subprocess. |
 | `--no-cache` | off | Bypass the response cache for this run. Successful responses are still written to the cache. |
@@ -163,12 +163,12 @@ PR Sentinel doesn't talk to any AI service directly — it shells out to a provi
 | Provider | CLI invoked | Prompt delivery | Default model |
 |---|---|---|---|
 | `claude` (default) | `claude --model <m> -p` | stdin | `sonnet` |
-| `copilot` | `copilot --no-color [--model <m>]` | stdin | the Copilot CLI's own default (no `--model` sent) |
+| `copilot` | `copilot --no-color [--model <m>]` | stdin | `claude-sonnet-4.6` |
 
 Notes:
 
 - **Models are provider-specific.** `--model` is forwarded verbatim to whichever provider you select; there's no translation between namespaces. `sonnet` means something to Claude, `gpt-5` means something to Copilot. If you pass a model the provider doesn't offer, that CLI reports the error.
-- **Discovering Copilot models.** Available models depend on your GitHub Copilot plan and can't be listed non-interactively. To see what your account can use, run `copilot` and type `/model`. PR Sentinel sends no `--model` for Copilot unless you pass one, so it follows whatever default you've configured there.
+- **Discovering Copilot models.** Available models depend on your GitHub Copilot plan and can't be listed non-interactively. To see what your account can use, run `copilot` and type `/model`. PR Sentinel defaults to `claude-sonnet-4.6` for Copilot; override with `--model` if your plan doesn't include it.
 - **Copilot runs read-only.** PR Sentinel invokes Copilot *without* `--allow-all-tools`. The full diff is embedded in the prompt and the agent only returns a JSON verdict, so Copilot never needs to run shell commands or edit files in your repo.
 - **Authentication is the provider's.** No API keys live in PR Sentinel — Claude uses your Claude Code login, Copilot uses your `copilot login` session.
 
