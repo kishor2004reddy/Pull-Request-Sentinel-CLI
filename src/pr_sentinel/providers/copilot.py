@@ -15,7 +15,7 @@ def _ensure_copilot_available() -> str:
     if not path:
         raise CopilotRunnerError(
             "copilot CLI not found on PATH. Install the GitHub Copilot CLI "
-            "(npm i -g @github/copilot) and run `copilot login` first."
+            "(winget install GitHub.Copilot) and run `copilot login` first."
         )
     return path
 
@@ -23,11 +23,6 @@ def _ensure_copilot_available() -> str:
 def _invoke(prompt: str, timeout: int, model: str | None = None) -> str:
     """Run the Copilot CLI non-interactively with the prompt on stdin.
 
-    Unlike `claude -p`, Copilot reads the prompt from stdin when no `-p` flag is
-    given (passing it as an argument would blow past the Windows command-line
-    length limit on large diffs). We deliberately omit `--allow-all-tools`: the
-    prompt contains the full diff and only asks for a JSON verdict, so no tools
-    are needed and Copilot cannot autonomously edit files in the repo.
     `--no-color` keeps captured stdout free of ANSI escape codes.
     """
     copilot = _ensure_copilot_available()

@@ -2,7 +2,7 @@
 
 Local pull-request review tool. Reads a git diff, runs four specialized review agents over it via a local AI CLI, and emits a structured JSON + Markdown report so you can fix issues *before* raising the PR.
 
-No API keys. No hosted services. PR Sentinel shells out to a provider CLI you already have — `claude -p` (default) or the GitHub Copilot CLI (`--provider copilot`) — and uses that tool's existing authentication. See [Providers](#providers).
+No API keys. No hosted services. PR Sentinel shells out to a provider CLI you already have — the GitHub Copilot CLI (default) or `claude -p` (`--provider claude`) — and uses that tool's existing authentication. See [Providers](#providers).
 
 ## How it works
 
@@ -13,10 +13,10 @@ git diff main...HEAD
 [ diff_parser ] ── filters built-in noise + user skip patterns
         │             (--skip-files, .prsentinelignore)
         ▼
-[ chunker ] ── packs files into ≤100k-char chunks (hybrid batching)
+[ router ] ── per file, decides which agents are relevant for those file types
         │
         ▼
-[ router ] ── per chunk, decides which agents are relevant for those file types
+[ chunker ] ── packs each agent's files into ≤100k-char chunks (hybrid batching)
         │
         ▼
 [ orchestrator ] ── runs (agent × chunk) tasks in a bounded thread pool
@@ -162,8 +162,8 @@ PR Sentinel doesn't talk to any AI service directly — it shells out to a provi
 
 | Provider | CLI invoked | Prompt delivery | Default model |
 |---|---|---|---|
-| `claude` (default) | `claude --model <m> -p` | stdin | `sonnet` |
-| `copilot` | `copilot --no-color [--model <m>]` | stdin | `claude-sonnet-4.6` |
+| `claude` | `claude --model <m> -p` | stdin | `sonnet` |
+| `copilot` (default) | `copilot --no-color [--model <m>]` | stdin | `claude-sonnet-4.6` |
 
 Notes:
 
@@ -320,11 +320,13 @@ pytest -q
 
 ## Troubleshooting
 
-**`claude CLI not found on PATH`** — install Claude Code and confirm `claude --version` works in the same shell where you run `pr-sentinel`.
+**`copilot CLI not found on PATH`** — install the GitHub Copilot CLI (`npm install -g @github/copilot-cli`) and confirm `copilot --version` works in the same shell where you run `pr-sentinel`.
 
-**`claude returned non-JSON output after retry`** — Claude occasionally returns prose instead of JSON. The runner retries once; if it still fails, that chunk's findings are dropped and the agent is marked failed for the run. Re-running usually succeeds.
+**`claude CLI not found on PATH`** — only relevant when using `--provider claude`. Install Claude Code and confirm `claude --version` works in the same shell.
 
-**Slow runs** — large diffs trigger chunking. Each chunk is one Claude call per agent. Reduce scope with `--agents security` if you only want one perspective, or with `--max-file-size` to truncate huge files. The cache amortizes repeat runs against the same diff.
+**`copilot returned non-JSON output after retry`** — the provider CLI occasionally returns prose instead of JSON. The runner retries once; if it still fails, that chunk's findings are dropped and the agent is marked failed for the run. Re-running usually succeeds.
+
+**Slow runs** — large diffs trigger chunking. Each chunk is one provider call per agent. Reduce scope with `--agents security` if you only want one perspective, or with `--max-file-size` to truncate huge files. The cache amortizes repeat runs against the same diff.
 
 **Lock files / minified files showing up** — they shouldn't. If they do, add the pattern to `NOISE_PATTERNS` in [config.py](src/pr_sentinel/config.py), or skip on a per-project basis with `.prsentinelignore` (see [Skipping files](#skipping-files)).
 
@@ -336,7 +338,7 @@ pytest -q
 - `lineHint` is approximate — unified diffs have hunk headers, not absolute line numbers. The prompt asks Claude for a *description* of the location rather than a hallucinated number.
 - Agents cannot read other files in the repo. Review depth is limited to what's visible in the diff itself.
 - If any one chunk fails for an agent (timeout, exit code, unparseable JSON after retry), that agent is marked failed for the run and its partial findings are discarded. Other agents continue.
-- The Summary Agent makes one additional `claude` call per run to deduplicate and merge findings across the four review agents. If it fails (timeout, bad JSON), the report falls back to the raw findings — nothing is lost.
+- The Summary Agent makes one additional provider call per run to deduplicate and merge findings across the four review agents. If it fails (timeout, bad JSON), the report falls back to the raw findings — nothing is lost.
 
 ## License
 

@@ -130,8 +130,9 @@ def main() -> None:
     show_default=True,
     help=(
         "AI CLI to run the agents through. "
-        "'claude' shells out to `claude -p`; 'copilot' shells out to the "
-        "GitHub Copilot CLI. The two use different model namespaces, so "
+        "'copilot' (default) shells out to the GitHub Copilot CLI; "
+        "'claude' shells out to `claude -p`. "
+        "The two use different model namespaces, so "
         "--model is interpreted by whichever provider is selected."
     ),
 )
