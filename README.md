@@ -1,5 +1,9 @@
 # PR Sentinel
 
+[![PyPI version](https://img.shields.io/pypi/v/pr-sentinel)](https://pypi.org/project/pr-sentinel/)
+[![License](https://img.shields.io/pypi/l/pr-sentinel)](https://github.com/kishor2004reddy/Pull-Request-Sentinel-CLI/blob/main/LICENSE)
+[![Downloads](https://img.shields.io/pepy/dt/pr-sentinel)](https://pepy.tech/project/pr-sentinel)
+
 Local pull-request review tool. Reads a git diff, runs four specialized review agents over it via a local AI CLI, and emits a structured JSON + Markdown report so you can fix issues *before* raising the PR.
 
 No API keys. No hosted services. PR Sentinel shells out to a provider CLI you already have — the GitHub Copilot CLI (default) or `claude -p` (`--provider claude`) — and uses that tool's existing authentication. See [Providers](#providers).
