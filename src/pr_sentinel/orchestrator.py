@@ -2,7 +2,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
 from pr_sentinel.agents import AGENT_REGISTRY
-from pr_sentinel.config import DEFAULT_MAX_PARALLEL, DEFAULT_MODEL, DEFAULT_TIMEOUT
+from pr_sentinel.config import (
+    DEFAULT_MAX_PARALLEL,
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    DEFAULT_TIMEOUT,
+)
 
 
 def run_agents(
@@ -15,6 +20,7 @@ def run_agents(
     model: str = DEFAULT_MODEL,
     timeout: int = DEFAULT_TIMEOUT,
     use_cache: bool = True,
+    provider: str = DEFAULT_PROVIDER,
 ) -> list[dict]:
     """Run all (agent, chunk) tasks in parallel under a single bounded pool.
 
@@ -69,7 +75,7 @@ def run_agents(
         future_to_meta: dict = {}
         for k, idx, chunk in tasks:
             future = pool.submit(
-                instances[k].process_chunk, chunk, model, timeout, use_cache
+                instances[k].process_chunk, chunk, model, timeout, use_cache, provider
             )
             future_to_meta[future] = (k, idx)
 

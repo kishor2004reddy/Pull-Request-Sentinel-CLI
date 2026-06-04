@@ -7,11 +7,42 @@ where they are used.
 """
 from pathlib import Path
 
-# --- Orchestration / claude execution ---------------------------------------
+# --- Orchestration / provider execution -------------------------------------
 DEFAULT_MAX_PARALLEL = 12
 DEFAULT_TIMEOUT = 600
+
+# --- Providers ---------------------------------------------------------------
+# A provider is an AI CLI we shell out to. Each has its own model namespace,
+# so the default model is resolved *per provider* (see default_model_for).
+DEFAULT_PROVIDER = "copilot"
+VALID_PROVIDERS = {"claude", "copilot"}
+
+# Claude Code CLI defaults (shortcuts understood by `claude --model`).
 DEFAULT_MODEL = "sonnet"
 DEFAULT_SUMMARY_MODEL = "haiku"
+
+# GitHub Copilot CLI defaults. Copilot uses a different model namespace
+# (e.g. claude-haiku-4.5, claude-sonnet-4.5, gpt-5) whose availability depends
+# on the user's plan and isn't enumerable headlessly.
+# A user-supplied --model always takes precedence.
+DEFAULT_COPILOT_MODEL = "claude-sonnet-4.6"
+DEFAULT_COPILOT_SUMMARY_MODEL = None
+
+
+def default_model_for(provider: str) -> str | None:
+    """Default main-agent model for a provider when --model is not given.
+
+    Returns None for providers (e.g. copilot) where we defer to the CLI's own
+    default rather than asserting a model we can't verify.
+    """
+    return DEFAULT_COPILOT_MODEL if provider == "copilot" else DEFAULT_MODEL
+
+
+def default_summary_model_for(provider: str) -> str | None:
+    """Default summary-agent model for a provider (None defers to the CLI)."""
+    if provider == "copilot":
+        return DEFAULT_COPILOT_SUMMARY_MODEL
+    return DEFAULT_SUMMARY_MODEL
 
 # --- Diff processing --------------------------------------------------------
 DEFAULT_CHUNK_BUDGET = 100_000

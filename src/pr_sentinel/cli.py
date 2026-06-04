@@ -9,7 +9,8 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 
-from pr_sentinel import __version__, cache, chunker, git_diff, diff_parser, orchestrator, report_generator, router
+from pr_sentinel import cache, orchestrator, report_generator, router, ui
+from pr_sentinel.diff import chunker, diff_parser, git_diff
 from pr_sentinel.agents.summary_agent import SummaryAgent
 from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel.config import (
@@ -19,17 +20,18 @@ from pr_sentinel.config import (
     DEFAULT_HEAD_REF,
     DEFAULT_MAX_FILE_SIZE,
     DEFAULT_MAX_PARALLEL,
-    DEFAULT_MODEL,
     DEFAULT_OUT_DIR,
+    DEFAULT_PROVIDER,
     DEFAULT_PRUNE_AGE,
     DEFAULT_REPORT_FORMAT,
-    DEFAULT_SUMMARY_MODEL,
     DEFAULT_TIMEOUT,
     IGNORE_FILE_NAME,
-    RISK_STYLE,
     SOURCE_DIFF_FILENAME,
     VALID_AGENTS,
     VALID_FORMATS,
+    VALID_PROVIDERS,
+    default_model_for,
+    default_summary_model_for,
 )
 
 console = Console()
@@ -46,193 +48,10 @@ def _parse_agents(value: str) -> list[str]:
     return requested
 
 
-def _header_panel(
-    source: str,
-    repo_dir,
-    model,
-    diff_save_path: Path,
-    base_branch: str | None = None,
-    head_branch: str | None = None,
-) -> Panel:
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold cyan", no_wrap=True)
-    grid.add_column()
-    grid.add_row("Source", source)
-    if base_branch and head_branch:
-        grid.add_row("Base", base_branch)
-        grid.add_row("Head", head_branch)
-    grid.add_row("Repo", str(repo_dir) if repo_dir else "(current directory)")
-    grid.add_row("Model", model or "Claude Code default")
-    grid.add_row("Saved diff", str(diff_save_path))
-    return Panel(
-        grid,
-        title="[bold cyan]PR Sentinel[/]",
-        subtitle=f"[dim]v{__version__}[/]",
-        border_style="cyan",
-        padding=(1, 2),
-    )
-
-
-def _skipped_panel(paths: list[str]) -> Panel:
-    body = "\n".join(f"[dim]{p}[/]" for p in paths)
-    return Panel(
-        body,
-        title=f"[yellow]Skipped {len(paths)} noise file(s)[/]",
-        border_style="yellow",
-        padding=(0, 1),
-    )
-
-
-def _files_table(files: list[dict]) -> Table:
-    table = Table(
-        title="Files to review",
-        title_style="bold",
-        show_header=True,
-        header_style="bold cyan",
-        border_style="dim",
-    )
-    table.add_column("Change", style="magenta")
-    table.add_column("Path")
-    table.add_column("+", justify="right", style="green")
-    table.add_column("-", justify="right", style="red")
-    for f in files:
-        table.add_row(
-            f["changeType"],
-            f["filePath"],
-            str(f["addedLines"]),
-            str(f["removedLines"]),
-        )
-    return table
-
-
-def _run_plan_panel(
-    total_diff_size: int,
-    per_agent_plan: list[tuple[str, int, int]],
-    chunk_budget: int,
-    max_parallel: int,
-    timeout: int,
-) -> Panel:
-    """per_agent_plan: list of (display_name, file_count, chunk_count)."""
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold cyan", no_wrap=True)
-    grid.add_column()
-    grid.add_row("Diff size", f"{total_diff_size:,} chars")
-    grid.add_row("Chunk budget", f"{chunk_budget:,} chars")
-    for name, file_count, chunk_count in per_agent_plan:
-        if chunk_count == 0:
-            detail = "[dim]no relevant files — skipped[/]"
-        else:
-            detail = (
-                f"{file_count} file(s) → {chunk_count} chunk"
-                f"{'s' if chunk_count != 1 else ''}"
-            )
-        grid.add_row(name, detail)
-    grid.add_row("Max parallel", str(max_parallel))
-    grid.add_row("Timeout", f"{timeout}s")
-    return Panel(
-        grid,
-        title="[bold]Run plan[/]",
-        border_style="cyan",
-        padding=(1, 2),
-    )
-
-
-def _findings_table(agent_results: list[dict]) -> Table:
-    table = Table(
-        title="Findings",
-        title_style="bold",
-        show_header=True,
-        header_style="bold cyan",
-        border_style="dim",
-    )
-    table.add_column("Agent")
-    table.add_column("Status")
-    table.add_column("Total", justify="right")
-    table.add_column("High", justify="right", style="red")
-    table.add_column("Medium", justify="right", style="yellow")
-    table.add_column("Low", justify="right", style="blue")
-
-    total = high = medium = low = 0
-    for r in agent_results:
-        if r.get("failed"):
-            table.add_row(r["agent"], "[red]FAILED[/]", "-", "-", "-", "-")
-            continue
-        findings = r["findings"]
-        f_high = sum(1 for f in findings if f["severity"] == "High")
-        f_med = sum(1 for f in findings if f["severity"] == "Medium")
-        f_low = sum(1 for f in findings if f["severity"] == "Low")
-        total += len(findings)
-        high += f_high
-        medium += f_med
-        low += f_low
-        table.add_row(
-            r["agent"],
-            "[green]OK[/]",
-            str(len(findings)),
-            str(f_high),
-            str(f_med),
-            str(f_low),
-        )
-    table.add_section()
-    table.add_row(
-        "[bold]TOTAL[/]",
-        "",
-        f"[bold]{total}[/]",
-        f"[bold red]{high}[/]",
-        f"[bold yellow]{medium}[/]",
-        f"[bold blue]{low}[/]",
-    )
-    return table
-
-
-def _errors_panel(errors: list[tuple[str, str]]) -> Panel:
-    body = "\n\n".join(f"[bold red]{name}[/]\n[dim]{err}[/]" for name, err in errors)
-    return Panel(
-        body,
-        title=f"[bold red]Errors ({len(errors)})[/]",
-        border_style="red",
-        padding=(1, 2),
-    )
-
-
-def _verdict_panel(report: dict, agent_results: list[dict]) -> Panel:
-    risk = report["riskLevel"]
-    style = RISK_STYLE.get(risk, "white")
-    failed_count = sum(1 for r in agent_results if r.get("failed"))
-
-    if failed_count == len(agent_results):
-        body = "[bold]All agents failed[/] — see errors above and re-run."
-    elif failed_count:
-        body = (
-            f"{report['summary']}\n\n"
-            f"[yellow]Warning: {failed_count} agent(s) failed — "
-            f"risk level reflects only successful agents.[/]"
-        )
-    else:
-        body = report["summary"]
-
-    return Panel(
-        f"[bold {style}]Risk Level: {risk}[/]\n\n{body}",
-        title="[bold]Verdict[/]",
-        border_style=style,
-        padding=(1, 2),
-    )
-
-
-def _reports_panel(written: list[Path]) -> Panel:
-    body = "\n".join(f"[dim]{p}[/]" for p in written)
-    return Panel(
-        body,
-        title="[bold]Reports written[/]",
-        border_style="dim",
-        padding=(0, 1),
-    )
-
-
 @click.group()
 @click.version_option(package_name="pr-sentinel")
 def main() -> None:
-    """PR Sentinel — local PR review via Claude Code CLI."""
+    """PR Sentinel — local PR review via GitHub Copilot or Claude Code CLI."""
 
 
 @main.command()
@@ -302,17 +121,29 @@ def main() -> None:
     type=int,
     default=DEFAULT_CHUNK_BUDGET,
     show_default=True,
-    help="Max combined diff chars per Claude call before chunking.",
+    help="Max combined diff chars per provider call before chunking.",
+)
+@click.option(
+    "--provider",
+    type=click.Choice(sorted(VALID_PROVIDERS)),
+    default=DEFAULT_PROVIDER,
+    show_default=True,
+    help=(
+        "AI CLI to run the agents through. "
+        "'copilot' (default) shells out to the GitHub Copilot CLI; "
+        "'claude' shells out to `claude -p`. "
+        "The two use different model namespaces, so "
+        "--model is interpreted by whichever provider is selected."
+    ),
 )
 @click.option(
     "--model",
-    default=DEFAULT_MODEL,
+    default=None,
     help=(
-        "Claude model to use. "
-        "Available shortcuts: sonnet, opus, haiku. "
-        "Or pass a full model ID such as claude-opus-4-7, claude-sonnet-4-6, "
-        "claude-haiku-4-5-20251001. "
-        f"Forwarded to `claude --model`. Default: {DEFAULT_MODEL}"
+        "Model to use, forwarded verbatim to the selected provider. "
+        f"claude: shortcuts sonnet, opus, haiku or a full ID like claude-sonnet-4-6 (default: {default_model_for('claude')}). "
+        f"copilot: a Copilot model ID like claude-sonnet-4.6, gpt-5 (default: claude-sonnet-4.6). "
+        "Override with --model if your plan does not include the default."
     ),
 )
 @click.option(
@@ -321,7 +152,7 @@ def main() -> None:
     default=DEFAULT_MAX_PARALLEL,
     show_default=True,
     help=(
-        "Max concurrent claude calls across all (agent, chunk) pairs. "
+        "Max concurrent provider calls across all (agent, chunk) pairs. "
         f"Default {DEFAULT_MAX_PARALLEL} covers 1-2 chunk runs fully and gives ~2x speedup on large diffs. "
         "Lower (4-6) if you're rate-limited; higher (12-16) on CI boxes with headroom."
     ),
@@ -332,7 +163,7 @@ def main() -> None:
     default=DEFAULT_TIMEOUT,
     show_default=True,
     help=(
-        "Per-call timeout in seconds for each claude subprocess. "
+        "Per-call timeout in seconds for each provider subprocess. "
         "Default 600 (10 min) is generous; lower for fail-fast CI runs, "
         "raise if you see timeouts with opus on large chunks."
     ),
@@ -369,6 +200,7 @@ def review(
     out_format: str,
     max_file_size: int,
     chunk_budget: int,
+    provider: str,
     model: str | None,
     max_parallel: int,
     timeout: int,
@@ -380,6 +212,12 @@ def review(
 
     if diff_path and staged:
         raise click.UsageError("--diff and --staged cannot be combined.")
+
+    # Resolve the model per provider: a user-supplied --model is forwarded
+    # verbatim; otherwise fall back to the selected provider's own default.
+    # The two providers have separate namespaces, so there is no translation.
+    model = model or default_model_for(provider)
+    summary_model = default_summary_model_for(provider)
 
     base_display: str | None = None
     head_display: str | None = None
@@ -410,8 +248,14 @@ def review(
 
     console.print()
     console.print(
-        _header_panel(
-            source, repo_dir, model, diff_save_path, base_display, head_display
+        ui.header_panel(
+            source,
+            repo_dir,
+            model,
+            diff_save_path,
+            base_display,
+            head_display,
+            provider=provider,
         )
     )
 
@@ -433,13 +277,13 @@ def review(
     ]
 
     if skipped_noise:
-        console.print(_skipped_panel(skipped_noise))
+        console.print(ui.skipped_panel(skipped_noise))
 
     if not files:
         console.print("[yellow]No reviewable files. Exiting.[/]")
         return
 
-    console.print(_files_table(files))
+    console.print(ui.files_table(files))
 
     available = [a for a in agent_list if a in AGENT_REGISTRY]
     skipped_agents = [a for a in agent_list if a not in AGENT_REGISTRY]
@@ -475,7 +319,7 @@ def review(
     ]
 
     console.print(
-        _run_plan_panel(
+        ui.run_plan_panel(
             total_diff_size, per_agent_plan, chunk_budget, max_parallel, timeout
         )
     )
@@ -527,6 +371,7 @@ def review(
             max_parallel=max_parallel,
             timeout=timeout,
             use_cache=use_cache,
+            provider=provider,
         )
 
         for r in agent_results:
@@ -568,9 +413,10 @@ def review(
             try:
                 cleaned_findings, removed_count = SummaryAgent().run(
                     findings=raw_findings,
-                    model=DEFAULT_SUMMARY_MODEL,
+                    model=summary_model,
                     timeout=timeout,
                     use_cache=use_cache,
+                    provider=provider,
                 )
             except Exception as e:
                 console.print(f"[yellow]Summary Agent skipped: {e}[/]")
@@ -591,7 +437,7 @@ def review(
     if out_format in ("markdown", "both"):
         written.append(report_generator.write_markdown(report, out_dir))
 
-    console.print(_findings_table(agent_results))
+    console.print(ui.findings_table(agent_results))
 
     if cleaned_findings is not None:
         if removed_count > 0:
@@ -607,9 +453,9 @@ def review(
             )
 
     if errors:
-        console.print(_errors_panel(errors))
+        console.print(ui.errors_panel(errors))
 
-    console.print(_verdict_panel(report, agent_results))
+    console.print(ui.verdict_panel(report, agent_results))
 
     if use_cache:
         s = cache.stats()
@@ -624,7 +470,7 @@ def review(
     else:
         console.print("[dim]Cache: disabled (--no-cache)[/]")
 
-    console.print(_reports_panel(written))
+    console.print(ui.reports_panel(written))
 
 
 @main.group(name="cache")

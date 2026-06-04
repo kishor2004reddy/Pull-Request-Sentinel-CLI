@@ -1,8 +1,12 @@
 # PR Sentinel
 
-Local pull-request review tool. Reads a git diff, runs four specialized review agents over it via the Claude Code CLI, and emits a structured JSON + Markdown report so you can fix issues *before* raising the PR.
+[![PyPI version](https://img.shields.io/pypi/v/pr-sentinel)](https://pypi.org/project/pr-sentinel/)
+[![License](https://img.shields.io/pypi/l/pr-sentinel)](https://github.com/kishor2004reddy/Pull-Request-Sentinel-CLI/blob/main/LICENSE)
+[![Downloads](https://img.shields.io/pepy/dt/pr-sentinel)](https://pepy.tech/project/pr-sentinel)
 
-No API keys. No hosted services. PR Sentinel shells out to `claude -p` and uses your existing Claude Code authentication.
+Local pull-request review tool. Reads a git diff, runs four specialized review agents over it via a local AI CLI, and emits a structured JSON + Markdown report so you can fix issues *before* raising the PR.
+
+No API keys. No hosted services. PR Sentinel shells out to a provider CLI you already have — the GitHub Copilot CLI (default) or `claude -p` (`--provider claude`) — and uses that tool's existing authentication. See [Providers](#providers).
 
 ## How it works
 
@@ -13,24 +17,24 @@ git diff main...HEAD
 [ diff_parser ] ── filters built-in noise + user skip patterns
         │             (--skip-files, .prsentinelignore)
         ▼
-[ chunker ] ── packs files into ≤100k-char chunks (hybrid batching)
+[ router ] ── per file, decides which agents are relevant for those file types
         │
         ▼
-[ router ] ── per chunk, decides which agents are relevant for those file types
+[ chunker ] ── packs each agent's files into ≤100k-char chunks (hybrid batching)
         │
         ▼
 [ orchestrator ] ── runs (agent × chunk) tasks in a bounded thread pool
         │
-        ├── Security Agent      (claude -p prompts/security.md)
-        ├── Code Quality Agent  (claude -p prompts/quality.md)
-        ├── Performance Agent   (claude -p prompts/performance.md)
-        └── Testing Agent       (claude -p prompts/testing.md)
+        ├── Security Agent      (provider CLI + prompts/security.md)
+        ├── Code Quality Agent  (provider CLI + prompts/quality.md)
+        ├── Performance Agent   (provider CLI + prompts/performance.md)
+        └── Testing Agent       (provider CLI + prompts/testing.md)
                 │
                 ▼
-[ cache ] ── sha256(model + prompt) → response, on disk
+[ cache ] ── sha256(provider + model + prompt) → response, on disk
                 │
                 ▼
-[ Summary Agent ] ── single claude call that dedupes/merges findings across agents
+[ Summary Agent ] ── single provider call that dedupes/merges findings across agents
         │             (prompts/summary.md; falls back to raw findings on failure)
         ▼
 [ report_generator ] ── merges findings, computes risk level
@@ -70,7 +74,9 @@ If a chunk contains mixed file types (e.g. a `.cs` file and a `.css` file togeth
 ## Requirements
 
 - Python 3.11+
-- [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) installed and authenticated. `claude --version` must work from your shell.
+- At least one supported provider CLI, installed and authenticated:
+  - **Claude** (default) — [Claude Code CLI](https://docs.claude.com/en/docs/claude-code). `claude --version` must work from your shell.
+  - **Copilot** (optional, `--provider copilot`) — [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli). `copilot --version` must work, and you must have run `copilot login`.
 - Git, if you want to review live branches (not required for `--diff` mode).
 
 ## Install
@@ -128,9 +134,10 @@ Open `reports/review-report.md`.
 | `--out` | `./reports` | Output directory. |
 | `--format` | `both` | `json`, `markdown`, or `both`. |
 | `--max-file-size` | `20000` | Per-file diff size cap (chars). Larger files get truncated with a marker. |
-| `--chunk-budget` | `100000` | Max combined diff size per Claude call before chunking kicks in. |
-| `--model` | `sonnet` | Claude model to use. Shortcuts: `sonnet`, `opus`, `haiku`. Or pass a full model ID such as `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`. Forwarded to `claude --model`. |
-| `--max-parallel` | `12` | Max concurrent `claude` calls across all (agent, chunk) pairs. |
+| `--chunk-budget` | `100000` | Max combined diff size per provider call before chunking kicks in. |
+| `--provider` | `claude` | AI CLI to run the agents through. `claude` shells out to `claude -p`; `copilot` shells out to the GitHub Copilot CLI. See [Providers](#providers). |
+| `--model` | provider default | Model to use, forwarded verbatim to the selected provider. **claude:** shortcuts `sonnet`, `opus`, `haiku`, or a full ID like `claude-opus-4-8`, `claude-sonnet-4-6` (default `sonnet`). **copilot:** a Copilot model ID such as `claude-sonnet-4.6`, `gpt-5` (default `claude-sonnet-4.6`). |
+| `--max-parallel` | `12` | Max concurrent provider calls across all (agent, chunk) pairs. |
 | `--timeout` | `600` | Per-call timeout in seconds for each `claude` subprocess. |
 | `--no-cache` | off | Bypass the response cache for this run. Successful responses are still written to the cache. |
 | `--skip-files` | — | Comma-separated glob patterns to skip on top of built-in noise filters (e.g. `"*.lock,vendor/**,fixtures/*.json"`). Combines with `.prsentinelignore` if present. |
@@ -149,9 +156,33 @@ Inspect and manage the on-disk response cache.
 | `cache clear` | Wipe the entire cache (prompts for confirmation). |
 | `cache prune --older-than 30d` | Delete entries older than the given age. Supports `s/m/h/d` suffixes. Add `--dry-run` to preview. |
 
-The cache lives at `~/.pr-sentinel/cache/` by default. Override with the `PR_SENTINEL_CACHE_DIR` environment variable. Keys are `sha256(model + prompt)`, so changing the model or any prompt content invalidates the entry automatically.
+The cache lives at `~/.pr-sentinel/cache/` by default. Override with the `PR_SENTINEL_CACHE_DIR` environment variable. Keys are `sha256(provider + model + prompt)`, so changing the provider, the model, or any prompt content invalidates the entry automatically (and a Claude run never collides with a Copilot run that happens to use the same model name).
 
 **Auto-pruning.** Every `pr-sentinel review` run silently drops cache entries older than 90 days before doing any work. No flag, no output — it just keeps the cache from growing unbounded over time. The threshold is set via `AUTO_PRUNE_AGE_DAYS` in [config.py](src/pr_sentinel/config.py). Use `cache prune --older-than ...` for manual prunes at a different age.
+
+## Providers
+
+PR Sentinel doesn't talk to any AI service directly — it shells out to a provider CLI you already have installed and authenticated. Pick one with `--provider`:
+
+| Provider | CLI invoked | Prompt delivery | Default model |
+|---|---|---|---|
+| `claude` | `claude --model <m> -p` | stdin | `sonnet` |
+| `copilot` (default) | `copilot --no-color [--model <m>]` | stdin | `claude-sonnet-4.6` |
+
+Notes:
+
+- **Models are provider-specific.** `--model` is forwarded verbatim to whichever provider you select; there's no translation between namespaces. `sonnet` means something to Claude, `gpt-5` means something to Copilot. If you pass a model the provider doesn't offer, that CLI reports the error.
+- **Discovering Copilot models.** Available models depend on your GitHub Copilot plan and can't be listed non-interactively. To see what your account can use, run `copilot` and type `/model`. PR Sentinel defaults to `claude-sonnet-4.6` for Copilot; override with `--model` if your plan doesn't include it.
+- **Copilot runs read-only.** PR Sentinel invokes Copilot *without* `--allow-all-tools`. The full diff is embedded in the prompt and the agent only returns a JSON verdict, so Copilot never needs to run shell commands or edit files in your repo.
+- **Authentication is the provider's.** No API keys live in PR Sentinel — Claude uses your Claude Code login, Copilot uses your `copilot login` session.
+
+```bash
+# Run the review through GitHub Copilot instead of Claude
+pr-sentinel review --base main --provider copilot
+
+# Pick a specific Copilot model
+pr-sentinel review --diff my.diff --provider copilot --model claude-sonnet-4.5
+```
 
 ## Skipping files
 
@@ -255,7 +286,11 @@ src/pr_sentinel/
 ├── git_diff.py             # git rev-parse, git diff, --staged
 ├── diff_parser.py          # per-file splitting + noise filter (+ --skip-files / .prsentinelignore) + truncation
 ├── chunker.py              # greedy packer to keep prompts under chunk-budget
-├── claude_runner.py        # subprocess(claude -p) + JSON extraction + 1 retry
+├── providers/
+│   ├── __init__.py         # provider dispatch: name -> runner module (get_runner)
+│   ├── common.py           # shared JSON extraction + cache + 1-retry logic
+│   ├── claude.py           # subprocess(claude -p), prompt on stdin
+│   └── copilot.py          # subprocess(copilot --no-color), prompt on stdin
 ├── orchestrator.py         # parallel (agent, chunk) execution via ThreadPoolExecutor
 ├── router.py               # file-type routing table — decides which agents run per chunk
 ├── cache.py                # sha256-keyed disk cache + 90-day auto-prune
@@ -289,11 +324,13 @@ pytest -q
 
 ## Troubleshooting
 
-**`claude CLI not found on PATH`** — install Claude Code and confirm `claude --version` works in the same shell where you run `pr-sentinel`.
+**`copilot CLI not found on PATH`** — install the GitHub Copilot CLI (`npm install -g @github/copilot-cli`) and confirm `copilot --version` works in the same shell where you run `pr-sentinel`.
 
-**`claude returned non-JSON output after retry`** — Claude occasionally returns prose instead of JSON. The runner retries once; if it still fails, that chunk's findings are dropped and the agent is marked failed for the run. Re-running usually succeeds.
+**`claude CLI not found on PATH`** — only relevant when using `--provider claude`. Install Claude Code and confirm `claude --version` works in the same shell.
 
-**Slow runs** — large diffs trigger chunking. Each chunk is one Claude call per agent. Reduce scope with `--agents security` if you only want one perspective, or with `--max-file-size` to truncate huge files. The cache amortizes repeat runs against the same diff.
+**`copilot returned non-JSON output after retry`** — the provider CLI occasionally returns prose instead of JSON. The runner retries once; if it still fails, that chunk's findings are dropped and the agent is marked failed for the run. Re-running usually succeeds.
+
+**Slow runs** — large diffs trigger chunking. Each chunk is one provider call per agent. Reduce scope with `--agents security` if you only want one perspective, or with `--max-file-size` to truncate huge files. The cache amortizes repeat runs against the same diff.
 
 **Lock files / minified files showing up** — they shouldn't. If they do, add the pattern to `NOISE_PATTERNS` in [config.py](src/pr_sentinel/config.py), or skip on a per-project basis with `.prsentinelignore` (see [Skipping files](#skipping-files)).
 
@@ -305,7 +342,7 @@ pytest -q
 - `lineHint` is approximate — unified diffs have hunk headers, not absolute line numbers. The prompt asks Claude for a *description* of the location rather than a hallucinated number.
 - Agents cannot read other files in the repo. Review depth is limited to what's visible in the diff itself.
 - If any one chunk fails for an agent (timeout, exit code, unparseable JSON after retry), that agent is marked failed for the run and its partial findings are discarded. Other agents continue.
-- The Summary Agent makes one additional `claude` call per run to deduplicate and merge findings across the four review agents. If it fails (timeout, bad JSON), the report falls back to the raw findings — nothing is lost.
+- The Summary Agent makes one additional provider call per run to deduplicate and merge findings across the four review agents. If it fails (timeout, bad JSON), the report falls back to the raw findings — nothing is lost.
 
 ## License
 

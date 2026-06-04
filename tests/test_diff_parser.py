@@ -1,4 +1,4 @@
-from pr_sentinel import diff_parser
+from pr_sentinel.diff import diff_parser
 
 MODIFY_DIFF = """diff --git a/src/UserService.cs b/src/UserService.cs
 index 1111111..2222222 100644

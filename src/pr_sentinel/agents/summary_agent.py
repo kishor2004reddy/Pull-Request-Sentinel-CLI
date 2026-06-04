@@ -2,8 +2,8 @@ import json
 import re
 from importlib import resources
 
-from pr_sentinel import claude_runner
-from pr_sentinel.config import DEFAULT_TIMEOUT, VALID_SEVERITIES
+from pr_sentinel.config import DEFAULT_PROVIDER, DEFAULT_TIMEOUT, VALID_SEVERITIES
+from pr_sentinel.providers import get_runner
 
 _VALID_AGENT_NAMES = {
     "Security Agent",
@@ -60,6 +60,7 @@ class SummaryAgent:
         model: str | None = None,
         timeout: int = DEFAULT_TIMEOUT,
         use_cache: bool = True,
+        provider: str = DEFAULT_PROVIDER,
     ) -> tuple[list[dict], int]:
         """Clean findings. Returns (cleaned_findings, removed_count).
 
@@ -93,7 +94,7 @@ class SummaryAgent:
         prompt = self._template.replace("<<<FINDINGS>>>", findings_json)
 
         try:
-            response = claude_runner.run_json(
+            response = get_runner(provider).run_json(
                 prompt, timeout=timeout, model=model, use_cache=use_cache
             )
         except Exception:

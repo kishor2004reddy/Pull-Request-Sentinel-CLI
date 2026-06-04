@@ -1,7 +1,8 @@
 from importlib import resources
 
-from pr_sentinel import chunker, claude_runner
-from pr_sentinel.config import DEFAULT_TIMEOUT, VALID_SEVERITIES
+from pr_sentinel.diff import chunker
+from pr_sentinel.config import DEFAULT_PROVIDER, DEFAULT_TIMEOUT, VALID_SEVERITIES
+from pr_sentinel.providers import get_runner
 
 
 def load_prompt(filename: str) -> str:
@@ -24,6 +25,7 @@ class BaseAgent:
         model: str | None = None,
         timeout: int = DEFAULT_TIMEOUT,
         use_cache: bool = True,
+        provider: str = DEFAULT_PROVIDER,
     ) -> list[dict]:
         """Process a single chunk and return validated findings.
 
@@ -32,7 +34,7 @@ class BaseAgent:
         """
         diff_block = chunker.format_diff_block(chunk)
         prompt = self._template.replace("<<<DIFF>>>", diff_block)
-        response = claude_runner.run_json(
+        response = get_runner(provider).run_json(
             prompt, timeout=timeout, model=model, use_cache=use_cache
         )
         return self._validate_findings(response)

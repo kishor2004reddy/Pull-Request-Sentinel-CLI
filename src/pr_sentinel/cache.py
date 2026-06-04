@@ -20,9 +20,16 @@ def cache_dir() -> Path:
     return DEFAULT_CACHE_DIR
 
 
-def cache_key(prompt: str, model: str | None) -> str:
-    """Stable hash of (model, prompt). Any change to either invalidates the entry."""
+def cache_key(prompt: str, model: str | None, provider: str | None = None) -> str:
+    """Stable hash of (provider, model, prompt). Any change invalidates the entry.
+
+    `provider` is part of the key so two providers that happen to share a model
+    name (e.g. both can be asked for `claude-haiku-4.5`) never collide and serve
+    each other's cached responses.
+    """
     h = hashlib.sha256()
+    h.update((provider or "").encode("utf-8"))
+    h.update(b"\n")
     h.update((model or "").encode("utf-8"))
     h.update(b"\n")
     h.update(prompt.encode("utf-8"))
