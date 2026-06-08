@@ -24,6 +24,7 @@ from pr_sentinel.config import (
     DEFAULT_PROVIDER,
     DEFAULT_PRUNE_AGE,
     DEFAULT_REPORT_FORMAT,
+    DEFAULT_SUMMARY_TIMEOUT,
     DEFAULT_TIMEOUT,
     IGNORE_FILE_NAME,
     SOURCE_DIFF_FILENAME,
@@ -389,7 +390,10 @@ def review(
     ]
     cleaned_findings: list[dict] | None = None
     removed_count = 0
-    if raw_findings:
+    # Only run the summary pass when there are at least 2 findings — with 0 or 1
+    # there is nothing to dedup/consolidate, and the call runs serially after all
+    # agents, so skipping it is pure latency saved.
+    if len(raw_findings) > 1:
         finding_count = len(raw_findings)
         file_count = len({f["file"] for f in raw_findings})
         _summary_messages = [
@@ -407,14 +411,15 @@ def review(
                 idx = (idx + 1) % len(_summary_messages)
                 status.update(_summary_messages[idx])
 
+        _summary_agent = SummaryAgent()
         with console.status(_summary_messages[0]) as _status:
             _t = threading.Thread(target=_cycle_status, args=(_status,), daemon=True)
             _t.start()
             try:
-                cleaned_findings, removed_count = SummaryAgent().run(
+                cleaned_findings, removed_count = _summary_agent.run(
                     findings=raw_findings,
                     model=summary_model,
-                    timeout=timeout,
+                    timeout=DEFAULT_SUMMARY_TIMEOUT,
                     use_cache=use_cache,
                     provider=provider,
                 )
@@ -423,6 +428,13 @@ def review(
             finally:
                 _stop_cycling.set()
                 _t.join()
+
+        # TESTING ONLY: report how long the summary LLM call took.
+        if _summary_agent.last_llm_seconds is not None:
+            console.print(
+                f"[dim]Summary Agent LLM response time: "
+                f"{_summary_agent.last_llm_seconds:.2f}s[/]"
+            )
 
     report = report_generator.build_report(
         agent_results=agent_results,

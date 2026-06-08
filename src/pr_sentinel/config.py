@@ -11,6 +11,8 @@ from pathlib import Path
 DEFAULT_MAX_PARALLEL = 12
 DEFAULT_TIMEOUT = 600
 
+DEFAULT_SUMMARY_TIMEOUT = 300
+
 # --- Providers ---------------------------------------------------------------
 # A provider is an AI CLI we shell out to. Each has its own model namespace,
 # so the default model is resolved *per provider* (see default_model_for).
@@ -19,14 +21,17 @@ VALID_PROVIDERS = {"claude", "copilot"}
 
 # Claude Code CLI defaults (shortcuts understood by `claude --model`).
 DEFAULT_MODEL = "sonnet"
-DEFAULT_SUMMARY_MODEL = "haiku"
+DEFAULT_SUMMARY_MODEL = "sonnet"
 
 # GitHub Copilot CLI defaults. Copilot uses a different model namespace
 # (e.g. claude-haiku-4.5, claude-sonnet-4.5, gpt-5) whose availability depends
 # on the user's plan and isn't enumerable headlessly.
 # A user-supplied --model always takes precedence.
 DEFAULT_COPILOT_MODEL = "claude-sonnet-4.6"
-DEFAULT_COPILOT_SUMMARY_MODEL = None
+# Dedup/consolidation is a lightweight task — pin a fast, cheap model so the
+# summary pass (which runs serially after all agents) doesn't gate on a heavy
+# model. Mirrors the claude path, which uses haiku for the same reason.
+DEFAULT_COPILOT_SUMMARY_MODEL = "claude-sonnet-4.6"
 
 
 def default_model_for(provider: str) -> str | None:
@@ -88,7 +93,7 @@ NOISE_PATTERNS = [
     "*/node_modules/*",
     "*/__pycache__/*",
 
-    # binary files that are large but unlikely to contain PR-relevant info
+    
     "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ico", "*.webp", "*.bmp", "*.tiff",
     "*.ttf", "*.woff", "*.woff2", "*.eot", "*.otf",
     "*.mp4", "*.mp3", "*.wav", "*.avi", "*.mov", "*.webm",
