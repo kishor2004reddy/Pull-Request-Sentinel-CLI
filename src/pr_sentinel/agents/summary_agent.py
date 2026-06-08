@@ -1,5 +1,4 @@
 import json
-import re
 import time
 from importlib import resources
 
@@ -17,22 +16,6 @@ _VALID_AGENT_NAMES = {
     "Performance Agent",
     "Testing Agent",
 }
-
-
-_NUMBERED_ITEM = re.compile(r"(?<!\n)( +)(\d+\. )")
-
-
-def _fix_numbered_list(text: str) -> str:
-    """Ensure each numbered list item starts on its own line.
-
-    The model sometimes runs items together inline ("1. foo 2. bar") despite
-    being instructed to use newlines. This normalizes any whitespace run
-    immediately before "N. " (N >= 2) to a single newline.
-    Only fires when the text actually starts with a numbered item.
-    """
-    if not re.match(r"^\d+\. ", text):
-        return text
-    return _NUMBERED_ITEM.sub(r"\n\2", text)
 
 
 def _canonical_key(f: dict) -> tuple[str, ...]:
@@ -166,10 +149,10 @@ class SummaryAgent:
     def _validate(self, response: dict, original: list[dict]) -> list[dict]:
         """Reconstruct surviving findings from the originals by `_id`.
 
-        The model returns only the winning `_id` per finding, plus optional
-        `file`/`lineHint`/`recommendation` overrides for Rule 2/3 consolidations.
-        Every verbatim field is restored from `original[_id]`, so the model can
-        never corrupt or hallucinate them — and its output stays tiny.
+        The model returns the winning `_id` per finding, plus a `members` id list
+        for Rule 2/3 consolidations. Every visible field is restored from
+        `original[_id]` (or assembled by us from the members), so the model can
+        neither corrupt nor hallucinate text — and its output stays tiny.
         """
         raw = response.get("findings", [])
         if not isinstance(raw, list) or not raw:
@@ -191,17 +174,16 @@ class SummaryAgent:
             if severity not in VALID_SEVERITIES:
                 severity = "Low"
 
-            # Restore verbatim fields from the winner; apply an override only
-            # when the model explicitly supplied one (Rule 2/3).
-            file = str(f["file"]) if "file" in f else str(base.get("file", "<unknown>"))
-            line_hint = (
-                str(f["lineHint"]) if "lineHint" in f else str(base.get("lineHint", ""))
-            )
-            recommendation = (
-                _fix_numbered_list(str(f["recommendation"]).strip())
-                if "recommendation" in f
-                else str(base.get("recommendation", "")).strip()
-            )
+            file = str(base.get("file", "<unknown>"))
+            line_hint = str(base.get("lineHint", ""))
+            recommendation = str(base.get("recommendation", "")).strip()
+
+            # Rule 2/3 consolidation: the model lists the grouped `_id`s and WE
+            # assemble the file/line/recommendation list — no text comes back
+            # from the model, so the heavy output stays out of the LLM.
+            members = self._member_findings(f.get("members"), source_id, original)
+            if members is not None:
+                file, line_hint, recommendation = self._consolidate(base, members)
 
             cleaned.append({
                 "agent": agent,
@@ -216,3 +198,51 @@ class SummaryAgent:
         if not cleaned:
             return original
         return cleaned
+
+    @staticmethod
+    def _member_findings(
+        members, winner_id: int, original: list[dict]
+    ) -> list[dict] | None:
+        """Resolve a model-supplied `members` id list into the grouped findings.
+
+        Returns None when there is nothing to consolidate (no list, or fewer than
+        two valid members) — the caller then treats it as a plain survivor.
+        """
+        if not isinstance(members, list):
+            return None
+        ids: list[int] = []
+        for m in members:
+            if isinstance(m, int) and 0 <= m < len(original) and m not in ids:
+                ids.append(m)
+        if winner_id not in ids:
+            ids.insert(0, winner_id)
+        if len(ids) < 2:
+            return None
+        return [original[i] for i in ids]
+
+    @staticmethod
+    def _consolidate(winner: dict, members: list[dict]) -> tuple[str, str, str]:
+        """Build (file, lineHint, recommendation) for a consolidated group.
+
+        Cross-file groups (Rule 2) collapse to "(multiple files)" and key each
+        recommendation by file path; same-file groups (Rule 3) keep the winner's
+        file/line and key by line. The numbered list is built here, not by the
+        model.
+        """
+        cross_file = len({str(m.get("file", "")) for m in members}) >= 2
+        items: list[str] = []
+        for i, m in enumerate(members, start=1):
+            rec = str(m.get("recommendation", "")).strip()
+            if cross_file:
+                label = str(m.get("file", "")) or "<unknown>"
+            else:
+                label = str(m.get("lineHint", "")) or str(m.get("file", "")) or "<unknown>"
+            items.append(f"{i}. {label} — {rec}")
+        recommendation = "\n".join(items)
+        if cross_file:
+            return "(multiple files)", "", recommendation
+        return (
+            str(winner.get("file", "<unknown>")),
+            str(winner.get("lineHint", "")),
+            recommendation,
+        )

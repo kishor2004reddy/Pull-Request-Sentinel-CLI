@@ -21,7 +21,8 @@ VALID_PROVIDERS = {"claude", "copilot"}
 
 # Claude Code CLI defaults (shortcuts understood by `claude --model`).
 DEFAULT_MODEL = "sonnet"
-DEFAULT_SUMMARY_MODEL = "sonnet"
+# Summary is a lightweight dedup pass — a fast model keeps it off the critical path.
+DEFAULT_SUMMARY_MODEL = "haiku"
 
 # GitHub Copilot CLI defaults. Copilot uses a different model namespace
 # (e.g. claude-haiku-4.5, claude-sonnet-4.5, gpt-5) whose availability depends
@@ -31,7 +32,7 @@ DEFAULT_COPILOT_MODEL = "claude-sonnet-4.6"
 # Dedup/consolidation is a lightweight task — pin a fast, cheap model so the
 # summary pass (which runs serially after all agents) doesn't gate on a heavy
 # model. Mirrors the claude path, which uses haiku for the same reason.
-DEFAULT_COPILOT_SUMMARY_MODEL = "claude-sonnet-4.6"
+DEFAULT_COPILOT_SUMMARY_MODEL = "claude-haiku-4.5"
 
 
 def default_model_for(provider: str) -> str | None:

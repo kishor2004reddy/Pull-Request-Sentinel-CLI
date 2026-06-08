@@ -64,3 +64,57 @@ def test_run_skips_provider_for_single_finding(monkeypatch):
     cleaned, removed = SummaryAgent().run([_finding()])
     assert removed == 0
     assert len(cleaned) == 1
+
+
+# --- _validate: members-based consolidation (Rule 2/3 built in Python) -------
+
+def test_validate_plain_survivor_restores_verbatim():
+    original = [_finding(file="a.py", issue="x"), _finding(file="b.py", issue="y")]
+    response = {"findings": [{"_id": 0}, {"_id": 1}]}
+    out = SummaryAgent()._validate(response, original)
+    assert [f["file"] for f in out] == ["a.py", "b.py"]
+    assert out[0]["recommendation"] == "fix it"  # restored, not rebuilt
+
+
+def test_validate_cross_file_consolidation_builds_multiple_files():
+    original = [
+        _finding(file="a.py", recommendation="validate a"),
+        _finding(file="b.py", recommendation="validate b"),
+        _finding(file="c.py", recommendation="validate c"),
+    ]
+    response = {"findings": [{"_id": 0, "members": [0, 1, 2]}]}
+    out = SummaryAgent()._validate(response, original)
+    assert len(out) == 1
+    assert out[0]["file"] == "(multiple files)"
+    assert out[0]["lineHint"] == ""
+    rec = out[0]["recommendation"]
+    assert rec.splitlines() == [
+        "1. a.py — validate a",
+        "2. b.py — validate b",
+        "3. c.py — validate c",
+    ]
+
+
+def test_validate_same_file_consolidation_keys_by_line():
+    original = [
+        _finding(file="a.py", lineHint="10", recommendation="guard here"),
+        _finding(file="a.py", lineHint="42", recommendation="guard there"),
+    ]
+    response = {"findings": [{"_id": 0, "members": [0, 1]}]}
+    out = SummaryAgent()._validate(response, original)
+    assert len(out) == 1
+    assert out[0]["file"] == "a.py"
+    assert out[0]["lineHint"] == "10"  # winner's line
+    assert out[0]["recommendation"].splitlines() == [
+        "1. 10 — guard here",
+        "2. 42 — guard there",
+    ]
+
+
+def test_validate_winner_added_when_missing_from_members():
+    original = [_finding(file="a.py"), _finding(file="b.py")]
+    # model lists only member 1, but winner is 0 — winner must still be included
+    response = {"findings": [{"_id": 0, "members": [1]}]}
+    out = SummaryAgent()._validate(response, original)
+    assert out[0]["file"] == "(multiple files)"
+    assert len(out[0]["recommendation"].splitlines()) == 2
