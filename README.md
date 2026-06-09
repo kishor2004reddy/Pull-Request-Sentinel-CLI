@@ -8,6 +8,8 @@ Local pull-request review tool. Reads a git diff, runs four specialized review a
 
 No API keys. No hosted services. PR Sentinel shells out to a provider CLI you already have — the GitHub Copilot CLI (default) or `claude -p` (`--provider claude`) — and uses that tool's existing authentication. See [Providers](#providers).
 
+Reports come out as JSON, Markdown, or a self-contained HTML page with editor deep-links (`--format`).
+
 ## How it works
 
 ```
@@ -38,9 +40,9 @@ git diff main...HEAD
         │             (prompts/summary.md; falls back to raw findings on failure)
         ▼
 [ report_generator ] ── merges findings, computes risk level
-        │
+        │                  renders JSON / Markdown / HTML (--format)
         ▼
-reports/report.json + reports/review-report.md
+reports/report.json + reports/review-report.md (+ reports/review-report.html)
 ```
 
 ## File-type routing
@@ -75,8 +77,8 @@ If a chunk contains mixed file types (e.g. a `.cs` file and a `.css` file togeth
 
 - Python 3.11+
 - At least one supported provider CLI, installed and authenticated:
-  - **Claude** (default) — [Claude Code CLI](https://docs.claude.com/en/docs/claude-code). `claude --version` must work from your shell.
-  - **Copilot** (optional, `--provider copilot`) — [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli). `copilot --version` must work, and you must have run `copilot login`.
+  - **Copilot** (default) — [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli). `copilot --version` must work, and you must have run `copilot login`.
+  - **Claude** (optional, `--provider claude`) — [Claude Code CLI](https://docs.claude.com/en/docs/claude-code). `claude --version` must work from your shell.
 - Git, if you want to review live branches (not required for `--diff` mode).
 
 ## Install
@@ -132,13 +134,13 @@ Open `reports/review-report.md`.
 | `--repo PATH` | cwd | Path to the git repository to review. Ignored when `--diff` is used. |
 | `--agents` | `security,quality,performance,testing` | Comma-separated agents to run. |
 | `--out` | `./reports` | Output directory. |
-| `--format` | `both` | `json`, `markdown`, or `both`. |
+| `--format` | `both` | Report format(s): `json`, `markdown`, `html`, `both` (json+markdown), or `all` (json+markdown+html). |
 | `--max-file-size` | `20000` | Per-file diff size cap (chars). Larger files get truncated with a marker. |
 | `--chunk-budget` | `100000` | Max combined diff size per provider call before chunking kicks in. |
-| `--provider` | `claude` | AI CLI to run the agents through. `claude` shells out to `claude -p`; `copilot` shells out to the GitHub Copilot CLI. See [Providers](#providers). |
+| `--provider` | `copilot` | AI CLI to run the agents through. `copilot` shells out to the GitHub Copilot CLI; `claude` shells out to `claude -p`. See [Providers](#providers). |
 | `--model` | provider default | Model to use, forwarded verbatim to the selected provider. **claude:** shortcuts `sonnet`, `opus`, `haiku`, or a full ID like `claude-opus-4-8`, `claude-sonnet-4-6` (default `sonnet`). **copilot:** a Copilot model ID such as `claude-sonnet-4.6`, `gpt-5` (default `claude-sonnet-4.6`). |
 | `--max-parallel` | `12` | Max concurrent provider calls across all (agent, chunk) pairs. |
-| `--timeout` | `600` | Per-call timeout in seconds for each `claude` subprocess. |
+| `--timeout` | `600` | Per-call timeout in seconds for each provider subprocess. |
 | `--no-cache` | off | Bypass the response cache for this run. Successful responses are still written to the cache. |
 | `--skip-files` | — | Comma-separated glob patterns to skip on top of built-in noise filters (e.g. `"*.lock,vendor/**,fixtures/*.json"`). Combines with `.prsentinelignore` if present. |
 
@@ -234,6 +236,11 @@ Use a stronger model for higher-stakes reviews:
 pr-sentinel review --base main --model opus
 ```
 
+Also emit a browsable HTML report:
+```bash
+pr-sentinel review --base main --format all
+```
+
 Force a fresh run, ignoring cached responses:
 ```bash
 pr-sentinel review --base main --no-cache
@@ -250,6 +257,14 @@ pr-sentinel cache prune --older-than 7d
 ```
 
 ## Report structure
+
+PR Sentinel can emit three report formats (pick with `--format`), all built from the same underlying report object:
+
+- **`report.json`** — the structured report, suitable for piping into other tools.
+- **`review-report.md`** — the human-readable Markdown report (sections below).
+- **`review-report.html`** — a single self-contained HTML page (inline CSS/JS, no external assets) with severity badges and `vscode://` editor deep-links straight to each finding's file.
+
+`--format both` (the default) writes JSON + Markdown; `--format all` adds HTML. Every run also drops the raw diff it reviewed at `reports/source.diff`. At the end of each run the CLI prints a **Run Stats** panel — total time, provider calls, cache hit rate, and (when the provider reports them) tokens, cost, and Copilot premium requests.
 
 The markdown report always emits these five sections in this fixed order, regardless of findings:
 
@@ -281,20 +296,26 @@ The JSON report contains the same data in a single structured object suitable fo
 
 ```
 src/pr_sentinel/
-├── cli.py                  # Click entrypoint + Rich UI
+├── cli.py                  # Click entrypoint — wires the pipeline together
+├── ui.py                   # Rich panel/table builders (pure: data → renderable)
 ├── config.py               # tunable defaults + shared constants (single source of truth)
-├── git_diff.py             # git rev-parse, git diff, --staged
-├── diff_parser.py          # per-file splitting + noise filter (+ --skip-files / .prsentinelignore) + truncation
-├── chunker.py              # greedy packer to keep prompts under chunk-budget
+├── runstats.py             # thread-safe per-run metrics (calls, tokens, cost, time)
+├── diff/
+│   ├── git_diff.py         # git rev-parse, git diff, --staged
+│   ├── diff_parser.py      # per-file splitting + noise filter (+ --skip-files / .prsentinelignore) + truncation
+│   └── chunker.py          # greedy packer to keep prompts under chunk-budget
 ├── providers/
 │   ├── __init__.py         # provider dispatch: name -> runner module (get_runner)
-│   ├── common.py           # shared JSON extraction + cache + 1-retry logic
+│   ├── common.py           # shared JSON extraction + cache + 1-retry logic + runstats
 │   ├── claude.py           # subprocess(claude -p), prompt on stdin
 │   └── copilot.py          # subprocess(copilot --no-color), prompt on stdin
 ├── orchestrator.py         # parallel (agent, chunk) execution via ThreadPoolExecutor
 ├── router.py               # file-type routing table — decides which agents run per chunk
 ├── cache.py                # sha256-keyed disk cache + 90-day auto-prune
-├── report_generator.py     # build_report + JSON/Markdown writers
+├── report_generator/
+│   ├── __init__.py         # build_report + JSON writer + shared report-level helpers
+│   ├── markdown.py         # Markdown renderer
+│   └── html.py             # self-contained HTML renderer (editor deep-links)
 ├── agents/
 │   ├── base.py             # BaseAgent: load prompt, chunk, call, validate
 │   ├── security_agent.py
@@ -312,6 +333,8 @@ src/pr_sentinel/
 tests/
 ├── test_diff_parser.py
 ├── test_chunker.py
+├── test_providers.py
+├── test_summary_agent.py
 └── test_report_generator.py
 ```
 

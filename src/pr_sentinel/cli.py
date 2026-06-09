@@ -175,7 +175,7 @@ def main() -> None:
     default=False,
     help=(
         "Bypass the response cache for this run. Every (agent, chunk, model) "
-        "combination will hit Claude even if a cached response exists. "
+        "combination will hit the provider even if a cached response exists. "
         "Successful responses still get written to the cache."
     ),
 )
