@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 
@@ -20,13 +21,15 @@ def _ensure_copilot_available() -> str:
     return path
 
 
-def _invoke(prompt: str, timeout: int, model: str | None = None) -> str:
+def _invoke(prompt: str, timeout: int, model: str | None = None) -> tuple[str, dict]:
     """Run the Copilot CLI non-interactively with the prompt on stdin.
 
-    `--no-color` keeps captured stdout free of ANSI escape codes.
+    `--no-color` keeps captured output free of ANSI escape codes; `--output-format
+    json` emits a JSONL event stream that carries the answer plus usage data,
+    which `_parse_stream` decodes.
     """
     copilot = _ensure_copilot_available()
-    args = [copilot, "--no-color"]
+    args = [copilot, "--no-color", "--output-format", "json"]
     if model:
         args.extend(["--model", model])
     try:
@@ -47,7 +50,50 @@ def _invoke(prompt: str, timeout: int, model: str | None = None) -> str:
             f"copilot exited {result.returncode}: "
             f"{(result.stderr or result.stdout).strip()[:500]}"
         )
-    return result.stdout
+    return _parse_stream(result.stdout)
+
+
+def _parse_stream(stdout: str) -> tuple[str, dict]:
+    """Decode copilot's --output-format json event stream into (answer_text, usage).
+
+    The stream is JSONL: one JSON object per line. The answer is the content of
+    the final `assistant.message` event; output tokens accumulate across those
+    events and premium-request usage comes from the terminal `result` event.
+    Copilot reports neither input tokens nor a USD cost, so those stay None.
+    """
+    answer = ""
+    output_tokens = 0
+    saw_output = False
+    premium = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (ValueError, json.JSONDecodeError):
+            continue  # ignore any non-JSON noise on the stream
+        etype = event.get("type")
+        data = event.get("data") or {}
+        if etype == "assistant.message":
+            content = data.get("content")
+            if content:
+                answer = str(content)  # keep the latest (final) message
+            ot = data.get("outputTokens")
+            if isinstance(ot, (int, float)):
+                output_tokens += int(ot)
+                saw_output = True
+        elif etype == "result":
+            pr = (event.get("usage") or {}).get("premiumRequests")
+            if isinstance(pr, (int, float)):
+                premium = float(pr)
+    usage = {
+        "input_tokens": None,
+        "output_tokens": output_tokens if saw_output else None,
+        "cost_usd": None,
+        "premium_requests": premium,
+    }
+    return answer, usage
 
 
 def run_json(

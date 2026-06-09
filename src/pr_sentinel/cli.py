@@ -9,7 +9,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 
-from pr_sentinel import cache, orchestrator, report_generator, router, ui
+from pr_sentinel import cache, orchestrator, report_generator, router, runstats, ui
 from pr_sentinel.diff import chunker, diff_parser, git_diff
 from pr_sentinel.agents.summary_agent import SummaryAgent
 from pr_sentinel.agents import AGENT_REGISTRY
@@ -329,6 +329,8 @@ def review(
     use_cache = not no_cache
     cache.reset_stats()
     cache.auto_prune()
+    runstats.reset()
+    _t_start = time.perf_counter()
 
     chunk_count_by_display = {
         AGENT_REGISTRY[k].display_name: len(chunks_by_agent[k]) for k in available
@@ -469,18 +471,14 @@ def review(
 
     console.print(ui.verdict_panel(report, agent_results))
 
-    if use_cache:
-        s = cache.stats()
-        total = s["hits"] + s["misses"]
-        if total > 0:
-            saved_pct = (s["hits"] * 100) // total
-            console.print(
-                f"[dim]Cache:[/] [green]{s['hits']} hits[/] / "
-                f"[yellow]{s['misses']} misses[/]  "
-                f"[dim]({saved_pct}% saved)[/]"
-            )
-    else:
-        console.print("[dim]Cache: disabled (--no-cache)[/]")
+    console.print(
+        ui.runstats_panel(
+            runstats.summary(),
+            time.perf_counter() - _t_start,
+            cache.stats(),
+            cache_enabled=use_cache,
+        )
+    )
 
     console.print(ui.reports_panel(written))
 

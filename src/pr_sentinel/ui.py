@@ -196,3 +196,48 @@ def reports_panel(written: list[Path]) -> Panel:
         border_style="dim",
         padding=(0, 1),
     )
+
+
+def runstats_panel(
+    stats: dict, wall_seconds: float, cache_stats: dict, cache_enabled: bool = True
+) -> Panel:
+    """Render the end-of-run metrics: time, provider calls, cache, tokens, cost.
+
+    Token/cost/premium rows appear only when the active provider actually
+    reported them (claude reports tokens + cost; copilot reports output tokens +
+    premium requests but no input tokens or cost).
+    """
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", no_wrap=True)
+    grid.add_column()
+
+    grid.add_row("Total time", f"{wall_seconds:.1f}s")
+    grid.add_row("Provider calls", str(stats.get("calls", 0)))
+
+    if cache_enabled:
+        hits = cache_stats.get("hits", 0)
+        misses = cache_stats.get("misses", 0)
+        total = hits + misses
+        if total:
+            saved = hits * 100 // total
+            grid.add_row(
+                "Cache", f"[green]{hits} hits[/] / [yellow]{misses} misses[/] ({saved}% saved)"
+            )
+    else:
+        grid.add_row("Cache", "[dim]disabled (--no-cache)[/]")
+
+    if stats.get("has_input") or stats.get("has_output"):
+        parts = []
+        if stats.get("has_input"):
+            parts.append(f"{stats['input_tokens']:,} in")
+        if stats.get("has_output"):
+            parts.append(f"{stats['output_tokens']:,} out")
+        grid.add_row("Tokens", " · ".join(parts))
+
+    if stats.get("has_cost"):
+        grid.add_row("Cost", f"${stats['cost_usd']:.4f}")
+
+    if stats.get("has_premium"):
+        grid.add_row("Premium requests", f"{stats['premium_requests']:.2f}")
+
+    return Panel(grid, title="[bold]Run Stats[/]", border_style="cyan", padding=(1, 2))

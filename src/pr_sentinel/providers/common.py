@@ -8,11 +8,12 @@ extraction, caching, and the retry-once-on-bad-JSON dance — lives here.
 """
 import json
 import re
+import time
 from typing import Callable
 
 import click
 
-from pr_sentinel import cache
+from pr_sentinel import cache, runstats
 from pr_sentinel.config import DEFAULT_TIMEOUT
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -46,7 +47,7 @@ def extract_json(text: str) -> dict:
 
 
 def run_json(
-    invoke: Callable[[str, int, str | None], str],
+    invoke: Callable[[str, int, str | None], tuple[str, dict]],
     provider: str,
     prompt: str,
     timeout: int = DEFAULT_TIMEOUT,
@@ -55,9 +56,11 @@ def run_json(
 ) -> dict:
     """Invoke a provider CLI and return parsed JSON. Retries once on parse failure.
 
-    `invoke(prompt, timeout, model) -> str` runs the actual subprocess and
-    returns its stdout. Successful responses are cached under
-    sha256(provider + model + prompt). Cache hits skip the subprocess entirely.
+    `invoke(prompt, timeout, model) -> (answer_text, usage)` runs the actual
+    subprocess: it returns the model's answer text plus a usage dict (tokens,
+    cost, etc.). Each invocation is timed and recorded in `runstats` — including
+    a retry, which is a second billed call. Successful responses are cached under
+    sha256(provider + model + prompt); cache hits skip the subprocess entirely.
     Failures (timeouts, exit codes, JSON-parse errors) are never cached.
     """
     key = cache.cache_key(prompt, model, provider) if use_cache else None
@@ -66,22 +69,37 @@ def run_json(
         if cached is not None:
             return cached
 
-    raw = invoke(prompt, timeout, model)
-    try:
-        parsed = extract_json(raw)
-        if key is not None:
-            cache.set(key, parsed)
-        return parsed
-    except (ValueError, json.JSONDecodeError):
-        pass
-
-    raw = invoke(prompt + RETRY_NUDGE, timeout, model)
-    try:
-        parsed = extract_json(raw)
-        if key is not None:
-            cache.set(key, parsed)
-        return parsed
-    except (ValueError, json.JSONDecodeError) as e:
+    answer, parsed = _invoke_timed(invoke, provider, model, prompt, timeout)
+    if parsed is None:
+        answer, parsed = _invoke_timed(
+            invoke, provider, model, prompt + RETRY_NUDGE, timeout
+        )
+    if parsed is None:
         raise RunnerError(
-            f"{provider} returned non-JSON output after retry: {raw[:300]!r}"
-        ) from e
+            f"{provider} returned non-JSON output after retry: {answer[:300]!r}"
+        )
+
+    if key is not None:
+        cache.set(key, parsed)
+    return parsed
+
+
+def _invoke_timed(
+    invoke: Callable[[str, int, str | None], tuple[str, dict]],
+    provider: str,
+    model: str | None,
+    prompt: str,
+    timeout: int,
+) -> tuple[str, dict | None]:
+    """Run one invocation, record its timing/usage, and try to parse the answer.
+
+    Returns (answer_text, parsed_or_None). The call is recorded in `runstats`
+    regardless of whether the answer parsed, since it was billed either way.
+    """
+    t0 = time.perf_counter()
+    answer, usage = invoke(prompt, timeout, model)
+    runstats.record_call(provider, model, time.perf_counter() - t0, usage)
+    try:
+        return answer, extract_json(answer)
+    except (ValueError, json.JSONDecodeError):
+        return answer, None

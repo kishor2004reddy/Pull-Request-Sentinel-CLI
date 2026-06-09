@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 
@@ -19,12 +20,14 @@ def _ensure_claude_available() -> str:
     return path
 
 
-def _invoke(prompt: str, timeout: int, model: str | None = None) -> str:
+def _invoke(prompt: str, timeout: int, model: str | None = None) -> tuple[str, dict]:
     claude = _ensure_claude_available()
     args = [claude]
     if model:
         args.extend(["--model", model])
-    args.append("-p")
+    # --output-format json wraps the answer in a metadata envelope that also
+    # carries token usage and cost; _parse_envelope unwraps both.
+    args.extend(["-p", "--output-format", "json"])
     try:
         result = subprocess.run(
             args,
@@ -43,7 +46,47 @@ def _invoke(prompt: str, timeout: int, model: str | None = None) -> str:
             f"claude -p exited {result.returncode}: "
             f"{(result.stderr or result.stdout).strip()[:500]}"
         )
-    return result.stdout
+    return _parse_envelope(result.stdout)
+
+
+def _parse_envelope(stdout: str) -> tuple[str, dict]:
+    """Unwrap claude's --output-format json envelope into (answer_text, usage).
+
+    The model's answer lives in `result`; tokens/cost live alongside it. Total
+    input tokens sum the fresh, cache-creation, and cache-read counts (Claude
+    Code injects a large cached system context, so cache tokens dominate).
+    """
+    try:
+        env = json.loads(stdout)
+    except (ValueError, json.JSONDecodeError) as e:
+        raise ClaudeRunnerError(
+            f"claude returned a non-JSON envelope: {stdout[:300]!r}"
+        ) from e
+
+    if env.get("is_error"):
+        raise ClaudeRunnerError(
+            f"claude reported an error: {str(env.get('result'))[:300]}"
+        )
+
+    answer = str(env.get("result", ""))
+    u = env.get("usage") or {}
+    if u:
+        input_tokens = (
+            (u.get("input_tokens") or 0)
+            + (u.get("cache_creation_input_tokens") or 0)
+            + (u.get("cache_read_input_tokens") or 0)
+        )
+        output_tokens = u.get("output_tokens")
+    else:
+        input_tokens = None
+        output_tokens = None
+    usage = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": env.get("total_cost_usd"),
+        "premium_requests": None,
+    }
+    return answer, usage
 
 
 def run_json(
