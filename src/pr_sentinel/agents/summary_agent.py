@@ -1,5 +1,4 @@
 import json
-import time
 from importlib import resources
 
 from pr_sentinel.config import (
@@ -79,9 +78,6 @@ class SummaryAgent:
             .joinpath(self.prompt_file)
             .read_text(encoding="utf-8")
         )
-        # TESTING ONLY: wall-clock seconds of the most recent summary LLM call
-        # (None if no provider call was made, e.g. dedup short-circuited).
-        self.last_llm_seconds: float | None = None
 
     def run(
         self,
@@ -131,16 +127,12 @@ class SummaryAgent:
         findings_json = json.dumps(slim, separators=(",", ":"))
         prompt = self._template.replace("<<<FINDINGS>>>", findings_json)
 
-        # TESTING ONLY: time how long the provider/LLM takes to respond.
-        _t0 = time.perf_counter()
         try:
             response = get_runner(provider).run_json(
                 prompt, timeout=timeout, model=model, use_cache=use_cache
             )
         except Exception:
-            self.last_llm_seconds = time.perf_counter() - _t0
             return deduped, local_removed
-        self.last_llm_seconds = time.perf_counter() - _t0
 
         cleaned = self._validate(response, deduped)
         removed = local_removed + max(0, len(deduped) - len(cleaned))

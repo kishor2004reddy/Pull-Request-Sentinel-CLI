@@ -211,7 +211,8 @@ def runstats_panel(
     grid.add_column(style="bold cyan", no_wrap=True)
     grid.add_column()
 
-    grid.add_row("Total time", f"{wall_seconds:.1f}s")
+    minutes, seconds = divmod(wall_seconds, 60)
+    grid.add_row("Total time", f"{int(minutes)}m {seconds:.1f}s")
     grid.add_row("Provider calls", str(stats.get("calls", 0)))
 
     if cache_enabled:

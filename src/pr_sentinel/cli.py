@@ -431,13 +431,6 @@ def review(
                 _stop_cycling.set()
                 _t.join()
 
-        # TESTING ONLY: report how long the summary LLM call took.
-        if _summary_agent.last_llm_seconds is not None:
-            console.print(
-                f"[dim]Summary Agent LLM response time: "
-                f"{_summary_agent.last_llm_seconds:.2f}s[/]"
-            )
-
     report = report_generator.build_report(
         agent_results=agent_results,
         base_branch=base,
