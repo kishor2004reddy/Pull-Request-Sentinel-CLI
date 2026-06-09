@@ -431,18 +431,26 @@ def review(
                 _stop_cycling.set()
                 _t.join()
 
+    try:
+        repo_root = git_diff.get_repo_root(cwd=repo_dir)
+    except Exception:
+        repo_root = None
+
     report = report_generator.build_report(
         agent_results=agent_results,
         base_branch=base,
         source=source,
         cleaned_findings=cleaned_findings,
+        repo_root=repo_root,
     )
 
     written: list[Path] = []
-    if out_format in ("json", "both"):
+    if out_format in ("json", "both", "all"):
         written.append(report_generator.write_json(report, out_dir))
-    if out_format in ("markdown", "both"):
+    if out_format in ("markdown", "both", "all"):
         written.append(report_generator.write_markdown(report, out_dir))
+    if out_format in ("html", "all"):
+        written.append(report_generator.write_html(report, out_dir))
 
     console.print(ui.findings_table(agent_results))
 

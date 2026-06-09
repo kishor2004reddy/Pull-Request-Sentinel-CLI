@@ -62,10 +62,12 @@ VALID_SEVERITIES = {"Low", "Medium", "High"}
 SEVERITY_ORDER = {"High": 0, "Medium": 1, "Low": 2}
 
 # --- Report output ----------------------------------------------------------
-VALID_FORMATS = {"json", "markdown", "both"}
+# "both" stays json+markdown for backward compatibility; "all" adds html.
+VALID_FORMATS = {"json", "markdown", "html", "both", "all"}
 DEFAULT_OUT_DIR = Path("./reports")
 REPORT_JSON_FILENAME = "report.json"
 REPORT_MARKDOWN_FILENAME = "review-report.md"
+REPORT_HTML_FILENAME = "review-report.html"
 SOURCE_DIFF_FILENAME = "source.diff"
 IGNORE_FILE_NAME = ".prsentinelignore"
 

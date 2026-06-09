@@ -94,6 +94,58 @@ def test_findings_sorted_high_first_then_by_file():
     assert high_files == ["a.py", "b.py"]
 
 
+def test_write_html_creates_file(tmp_path):
+    report = report_generator.build_report(
+        agent_results=[_result([_finding("High")])],
+        base_branch="main",
+        source="branch:main",
+    )
+    path = report_generator.write_html(report, tmp_path)
+    assert path.exists()
+    assert path.name.endswith(".html")
+    html = path.read_text(encoding="utf-8")
+    assert html.startswith("<!DOCTYPE html>")
+    assert "Risk: High" in html
+    assert "Do not raise" in html
+
+
+def test_html_escapes_finding_text():
+    findings = [_finding("High", file="<script>x</script>.py")]
+    findings[0]["issue"] = "broken <b>tag</b> & ampersand"
+    report = report_generator.build_report(
+        agent_results=[_result(findings)],
+        base_branch="main",
+        source="branch:main",
+    )
+    html = report_generator._render_html(report)
+    assert "<script>x</script>.py" not in html
+    assert "&lt;script&gt;" in html
+    assert "&amp; ampersand" in html
+
+
+def test_html_empty_findings_shows_no_findings():
+    report = report_generator.build_report(
+        agent_results=[_result([])],
+        base_branch="main",
+        source="branch:main",
+    )
+    html = report_generator._render_html(report)
+    assert html.startswith("<!DOCTYPE html>")
+    assert "No findings" in html
+    assert "Merge Verdict" in html
+
+
+def test_agent_summary_data_matches_markdown_totals():
+    findings = [_finding("High"), _finding("Medium"), _finding("Low")]
+    report = report_generator.build_report(
+        agent_results=[_result(findings)],
+        base_branch="main",
+        source="branch:main",
+    )
+    _rows, totals = report_generator._agent_summary_data(report)
+    assert totals == {"total": 3, "high": 1, "medium": 1, "low": 1}
+
+
 def test_key_recommendations_deduplicated():
     findings = [
         _finding("High", "a.py", recommendation="same fix"),

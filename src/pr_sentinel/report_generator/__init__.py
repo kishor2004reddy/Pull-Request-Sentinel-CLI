@@ -1,8 +1,17 @@
+"""PR Sentinel report building and rendering.
+
+`build_report()` assembles the report dict; the JSON/Markdown/HTML writers
+render and persist it. The two human-readable renderers live in sibling
+modules — :mod:`markdown` and :mod:`html` — while the report-level helpers they
+share stay here. The renderers are imported at the bottom of this module to
+keep the shared helpers defined first and avoid a circular import.
+"""
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from pr_sentinel.config import (
+    REPORT_HTML_FILENAME,
     REPORT_JSON_FILENAME,
     REPORT_MARKDOWN_FILENAME,
     SEVERITY_ORDER,
@@ -47,6 +56,7 @@ def build_report(
     base_branch: str,
     source: str,
     cleaned_findings: list[dict] | None = None,
+    repo_root: str | None = None,
 ) -> dict:
     raw_findings: list[dict] = []
     failed_agents: list[str] = []
@@ -79,6 +89,7 @@ def build_report(
         "summary": _summary_text(all_findings, agents_executed, failed_agents),
         "agentsExecuted": agents_executed,
         "failedAgents": failed_agents,
+        "repoRoot": repo_root,
         "findings": all_findings,
     }
     if cleaned_findings is not None:
@@ -99,6 +110,15 @@ def write_markdown(report: dict, out_dir: Path) -> Path:
     path.write_text(_render_markdown(report), encoding="utf-8")
     return path
 
+
+def write_html(report: dict, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / REPORT_HTML_FILENAME
+    path.write_text(_render_html(report), encoding="utf-8")
+    return path
+
+
+# --- Report-level helpers shared by the renderers ---------------------------
 
 def _merge_verdict(report: dict) -> str:
     risk = report["riskLevel"]
@@ -165,12 +185,12 @@ def _key_recommendations(report: dict, limit: int = 5) -> list[dict]:
     return recs
 
 
-def _md_cell(s: str) -> str:
-    """Make a string safe for a markdown table cell."""
-    return s.replace("|", "\\|").replace("\n", " ").strip()
+def _agent_summary_data(report: dict) -> tuple[list[dict], dict]:
+    """Per-agent finding counts plus a TOTAL row, shared by all renderers.
 
-
-def _findings_summary_rows(report: dict) -> list[str]:
+    Returns (rows, totals) where each row is
+    {agent, status, total, high, medium, low} (counts are None when FAILED).
+    """
     findings = report["findings"]
     agents_executed = report["agentsExecuted"]
     failed_agents = set(report.get("failedAgents") or [])
@@ -179,14 +199,12 @@ def _findings_summary_rows(report: dict) -> list[str]:
     for f in findings:
         by_agent.setdefault(f["agent"], []).append(f)
 
-    rows: list[str] = []
-    rows.append("| Agent | Status | Total | High | Medium | Low |")
-    rows.append("|---|---|---:|---:|---:|---:|")
-
+    rows: list[dict] = []
     total = high = medium = low = 0
     for agent in agents_executed:
         if agent in failed_agents:
-            rows.append(f"| {agent} | FAILED | — | — | — | — |")
+            rows.append({"agent": agent, "status": "FAILED",
+                         "total": None, "high": None, "medium": None, "low": None})
             continue
         af = by_agent.get(agent, [])
         f_high = sum(1 for f in af if f["severity"] == "High")
@@ -196,151 +214,21 @@ def _findings_summary_rows(report: dict) -> list[str]:
         high += f_high
         medium += f_med
         low += f_low
-        rows.append(
-            f"| {agent} | OK | {len(af)} | {f_high} | {f_med} | {f_low} |"
-        )
+        rows.append({"agent": agent, "status": "OK", "total": len(af),
+                     "high": f_high, "medium": f_med, "low": f_low})
 
-    rows.append(
-        f"| **TOTAL** | | **{total}** | **{high}** | **{medium}** | **{low}** |"
-    )
-    return rows
+    totals = {"total": total, "high": high, "medium": medium, "low": low}
+    return rows, totals
 
 
-def _render_markdown(report: dict) -> str:
-    lines: list[str] = []
-    findings = report["findings"]
-    risk = report["riskLevel"]
+# The renderers depend on the helpers above, so import them last. This also
+# re-exports the render functions on the package for the writers and tests.
+from pr_sentinel.report_generator.markdown import _render_markdown  # noqa: E402
+from pr_sentinel.report_generator.html import _render_html, _rich_text_html  # noqa: E402
 
-    counts = {"High": 0, "Medium": 0, "Low": 0}
-    for f in findings:
-        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
-    raw_count = report.get("rawFindingCount")
-    breakdown = (
-        f"{len(findings)} total · {counts['High']} High · "
-        f"{counts['Medium']} Medium · {counts['Low']} Low"
-        if findings
-        else "0 findings"
-    )
-    if raw_count is not None and raw_count != len(findings):
-        breakdown += f" (cleaned from {raw_count} raw)"
-
-    lines.append("# PR Sentinel Review Report")
-    lines.append("")
-    lines.append(f"> **Risk Level: {risk}** — {report['summary']}")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-
-    lines.append("## Summary")
-    lines.append("")
-    lines.append("| Field | Value |")
-    lines.append("|---|---|")
-    coverage = "Yes" if report.get("coverageComplete", True) else "No — see failed agents"
-    lines.append(f"| Risk Level | **{risk}** |")
-    lines.append(f"| Coverage complete | {coverage} |")
-    lines.append(f"| Source | `{report['source']}` |")
-    lines.append(f"| Base branch | `{report['baseBranch']}` |")
-    lines.append(f"| Reviewed at | {report['reviewedAt']} |")
-    lines.append(f"| Agents | {', '.join(report['agentsExecuted'])} |")
-    failed = report.get("failedAgents") or []
-    if failed:
-        lines.append(f"| Failed agents | {', '.join(failed)} |")
-    lines.append(f"| Findings | {breakdown} |")
-    lines.append("")
-
-    lines.append("## Merge Verdict")
-    lines.append("")
-    verdict_text = _merge_verdict(report).replace("\n", "\n> ")
-    lines.append(f"> {verdict_text}")
-    lines.append("")
-
-    lines.append("## Key Findings")
-    lines.append("")
-    key = _key_findings(report)
-    if not key:
-        lines.append("_No findings._")
-        lines.append("")
-    else:
-        lines.append("| # | Severity | File | Location | Issue | Agent |")
-        lines.append("|---|---|---|---|---|---|")
-        for i, f in enumerate(key, 1):
-            loc = f.get("lineHint") or ""
-            loc_cell = f"`{_md_cell(loc)}`" if loc else "—"
-            lines.append(
-                f"| {i} | **{f['severity']}** | `{_md_cell(f['file'])}` | "
-                f"{loc_cell} | {_md_cell(f['issue'])} | {_md_cell(f['agent'])} |"
-            )
-        lines.append("")
-
-    lines.append("## Key Recommendations")
-    lines.append("")
-    recs = _key_recommendations(report)
-    if not recs:
-        lines.append("_No recommendations._")
-        lines.append("")
-    else:
-        for i, f in enumerate(recs, 1):
-            lines.append(f"{i}. **`{f['file']}`** — {f['recommendation']}")
-        lines.append("")
-
-    lines.append("## All Findings")
-    lines.append("")
-    lines.extend(_findings_summary_rows(report))
-    lines.append("")
-    if not findings:
-        lines.append("_No findings._")
-        return "\n".join(lines) + "\n"
-
-    SEVERITY_LABELS = [
-        ("High",   "🔴 High Severity"),
-        ("Medium", "🟡 Medium Severity"),
-        ("Low",    "🔵 Low Severity"),
-    ]
-
-    for severity, heading in SEVERITY_LABELS:
-        sev_findings = [f for f in findings if f["severity"] == severity]
-        if not sev_findings:
-            continue
-
-        lines.append(f"### {heading}  _({len(sev_findings)} finding(s))_")
-        lines.append("")
-
-        # Group by agent, preserving declared agent order
-        by_agent: dict[str, list[dict]] = {}
-        for f in sev_findings:
-            by_agent.setdefault(f["agent"], []).append(f)
-
-        for agent_name in report["agentsExecuted"]:
-            agent_findings = by_agent.get(agent_name, [])
-            if not agent_findings:
-                continue
-
-            lines.append(f"#### {agent_name}  _({len(agent_findings)} finding(s))_")
-            lines.append("")
-
-            for i, f in enumerate(agent_findings, start=1):
-                location = f" · line `{f['lineHint']}`" if f.get("lineHint") else ""
-                lines.append(f"##### {i}. `{f['file']}`{location}")
-                lines.append("")
-                lines.append(f"**Issue.** {f['issue']}")
-                lines.append("")
-                if f.get("reasoning"):
-                    reasoning = f["reasoning"]
-                    if "\n" in reasoning:
-                        lines.append("**Reasoning.**")
-                        lines.append("")
-                        lines.append(reasoning)
-                    else:
-                        lines.append(f"**Reasoning.** {reasoning}")
-                    lines.append("")
-                if f.get("recommendation"):
-                    rec = f["recommendation"]
-                    if "\n" in rec:
-                        lines.append("**Recommendation.**")
-                        lines.append("")
-                        lines.append(rec)
-                    else:
-                        lines.append(f"**Recommendation.** {rec}")
-                    lines.append("")
-
-    return "\n".join(lines) + "\n"
+__all__ = [
+    "build_report",
+    "write_json",
+    "write_markdown",
+    "write_html",
+]

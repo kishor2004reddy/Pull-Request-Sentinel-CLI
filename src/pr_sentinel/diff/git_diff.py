@@ -52,6 +52,26 @@ def get_current_branch(cwd: Path | None = None) -> str:
     return _run(["git", "branch", "--show-current"], cwd=cwd).strip()
 
 
+def get_repo_root(cwd: Path | None = None) -> str | None:
+    """Absolute path to the git work-tree root, or None if unavailable.
+
+    Used to turn the repo-relative file paths in findings into absolute paths
+    for editor deep-links. Best-effort: never raises.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
 def get_branch_diff(
     base: str,
     head: str = "HEAD",
