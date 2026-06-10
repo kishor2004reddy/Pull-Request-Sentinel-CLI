@@ -6,6 +6,7 @@ modules — :mod:`markdown` and :mod:`html` — while the report-level helpers t
 share stay here. The renderers are imported at the bottom of this module to
 keep the shared helpers defined first and avoid a circular import.
 """
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,23 @@ def _risk_level(findings: list[dict]) -> str:
     if severities:
         return "Low"
     return "None"
+
+
+def _assign_finding_ids(findings: list[dict]) -> None:
+    """Give each finding a stable short `id`, in place.
+
+    The id is derived from the finding's content (agent + file + issue) so the
+    HTML report and report.json agree on it, and so the push server can map a
+    browser selection back to the exact finding regardless of list order. A
+    suffix disambiguates the rare case of two identical findings.
+    """
+    seen: dict[str, int] = {}
+    for f in findings:
+        seed = f"{f.get('agent')}|{f.get('file')}|{f.get('issue')}"
+        base = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        f["id"] = base if n == 0 else f"{base}-{n}"
 
 
 def _summary_text(
@@ -67,6 +85,7 @@ def build_report(
 
     all_findings = list(cleaned_findings) if cleaned_findings is not None else raw_findings
     all_findings.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 99), f["file"]))
+    _assign_finding_ids(all_findings)
 
     agents_executed = [r["agent"] for r in agent_results]
 

@@ -146,6 +146,45 @@ def test_agent_summary_data_matches_markdown_totals():
     assert totals == {"total": 3, "high": 1, "medium": 1, "low": 1}
 
 
+def test_build_report_assigns_stable_finding_ids():
+    findings = [_finding("High", "a.py"), _finding("High", "b.py")]
+    report = report_generator.build_report(
+        agent_results=[_result(findings)],
+        base_branch="main",
+        source="branch:main",
+    )
+    ids = [f["id"] for f in report["findings"]]
+    assert all(ids)  # every finding has a non-empty id
+    assert len(set(ids)) == len(ids)  # ids are unique
+
+
+def test_identical_findings_get_disambiguated_ids():
+    findings = [_finding("High", "a.py"), _finding("High", "a.py")]
+    report = report_generator.build_report(
+        agent_results=[_result(findings)],
+        base_branch="main",
+        source="branch:main",
+    )
+    ids = [f["id"] for f in report["findings"]]
+    assert len(set(ids)) == 2
+
+
+def test_html_includes_push_ui_and_config_placeholder():
+    from pr_sentinel.config import PUSH_CONFIG_PLACEHOLDER
+
+    report = report_generator.build_report(
+        agent_results=[_result([_finding("High")])],
+        base_branch="main",
+        source="branch:main",
+    )
+    html = report_generator._render_html(report)
+    assert PUSH_CONFIG_PLACEHOLDER in html
+    assert 'class="pick"' in html
+    assert 'id="push-btn"' in html
+    fid = report["findings"][0]["id"]
+    assert f'data-finding-id="{fid}"' in html
+
+
 def test_key_recommendations_deduplicated():
     findings = [
         _finding("High", "a.py", recommendation="same fix"),

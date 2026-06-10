@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
+from pr_sentinel.config import PUSH_CONFIG_PLACEHOLDER
 from pr_sentinel.report_generator import _agent_summary_data, _merge_verdict
 
 # Editor deep-link scheme. VS Code (and forks via the same handler) open
@@ -198,6 +199,9 @@ def _render_html(report: dict) -> str:
     p.append('<meta name="viewport" content="width=device-width, initial-scale=1">')
     p.append(f"<title>PR Sentinel Review — {_e(risk)} risk</title>")
     p.append(f"<style>{_HTML_STYLE}</style>")
+    # The push server replaces this placeholder with a <script> that defines
+    # window.PRS_PUSH (endpoint + nonce). Left inert in the on-disk report.
+    p.append(PUSH_CONFIG_PLACEHOLDER)
     p.append("</head><body>")
     p.append('<main class="wrap">')
 
@@ -289,6 +293,17 @@ def _render_html(report: dict) -> str:
         p.append("</div>")
     p.append("</div>")
 
+    # Push toolbar — select findings via the checkboxes below and push the
+    # selection to an Azure DevOps PR. Only functional when this page is served
+    # by `pr-sentinel push-azure` (which injects PRS_PUSH); otherwise the JS
+    # disables the button and shows how to enable it.
+    if findings:
+        p.append('<div class="push-bar" id="push-bar">')
+        p.append('<label class="push-all"><input type="checkbox" id="push-select-all"> Select all</label>')
+        p.append('<button class="push-btn" id="push-btn" type="button" disabled>Push selected to PR</button>')
+        p.append('<span class="push-status" id="push-status"></span>')
+        p.append("</div>")
+
     if not findings:
         p.append('<p class="empty">No findings. 🎉</p>')
     else:
@@ -296,12 +311,16 @@ def _render_html(report: dict) -> str:
             for f in (x for x in findings if x["severity"] == severity):
                 sev_fg, sev_bg = _SEV_COLORS[severity]
                 file_html = _file_cell(f["file"], f.get("lineHint"), repo_root)
-                p.append(f'<details class="finding" data-sev="{severity}">')
+                fid = html.escape(str(f.get("id", "")), quote=True)
+                p.append(f'<details class="finding" data-sev="{severity}" data-finding-id="{fid}">')
                 p.append(
                     "<summary>"
+                    f'<input type="checkbox" class="pick" data-finding-id="{fid}" '
+                    'aria-label="Select finding to push">'
                     f'<span class="badge" style="color:{sev_fg};background:{sev_bg}">{severity}</span>'
                     f'<span class="file">{file_html}</span>'
                     f'<span class="agent-tag">{_e(f.get("agent"))}</span>'
+                    f'<span class="push-mark" data-finding-id="{fid}"></span>'
                     "</summary>"
                 )
                 p.append('<div class="finding-body">')
@@ -369,6 +388,21 @@ table.agents tr.total td{font-weight:700;border-bottom:none;}
 .filter:hover{background:#f3f4f6;}
 .filter.active{background:#1f2328;color:#fff;border-color:#1f2328;}
 .empty{color:var(--muted);text-align:center;padding:24px 0;}
+.push-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:10px 12px;margin-bottom:14px;background:#f6f8fa;
+  border:1px solid var(--line);border-radius:8px;}
+.push-all{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;}
+.push-btn{border:1px solid #1a7f37;background:#1a7f37;color:#fff;
+  padding:6px 14px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;}
+.push-btn:hover:not(:disabled){background:#176d30;}
+.push-btn:disabled{background:#8c959f;border-color:#8c959f;cursor:not-allowed;}
+.push-status{font-size:13px;color:var(--muted);}
+.push-status.ok{color:#1a7f37;}
+.push-status.err{color:#d1242f;}
+.finding summary .pick{flex:none;width:16px;height:16px;cursor:pointer;}
+.push-mark{flex:none;font-size:13px;font-weight:600;margin-left:8px;}
+.push-mark.ok{color:#1a7f37;}
+.push-mark.err{color:#d1242f;}
 .finding{border:1px solid var(--line);border-radius:8px;margin-bottom:10px;overflow:hidden;}
 .finding summary{display:flex;align-items:center;gap:10px;padding:11px 14px;
   cursor:pointer;list-style:none;}
@@ -410,5 +444,78 @@ _HTML_SCRIPT = """
       });
     });
   });
+})();
+
+// Push selected findings to an Azure DevOps PR. Active only when this page is
+// served by `pr-sentinel push-azure`, which injects window.PRS_PUSH.
+(function(){
+  var cfg=window.PRS_PUSH;
+  var bar=document.getElementById('push-bar');
+  if(!bar) return;
+  var btn=document.getElementById('push-btn');
+  var status=document.getElementById('push-status');
+  var selectAll=document.getElementById('push-select-all');
+  var picks=Array.prototype.slice.call(document.querySelectorAll('.pick'));
+
+  function selectedIds(){
+    return picks.filter(function(cb){return cb.checked&&!cb.disabled;})
+                .map(function(cb){return cb.getAttribute('data-finding-id');});
+  }
+  function updateBtn(){ if(cfg) btn.disabled=selectedIds().length===0; }
+
+  // A checkbox inside <summary> would otherwise toggle the details panel.
+  picks.forEach(function(cb){
+    cb.addEventListener('click',function(e){e.stopPropagation();});
+    cb.addEventListener('change',updateBtn);
+  });
+  if(selectAll){
+    selectAll.addEventListener('click',function(e){e.stopPropagation();});
+    selectAll.addEventListener('change',function(){
+      picks.forEach(function(cb){
+        if(cb.disabled) return;
+        var f=cb.closest('.finding');
+        if(!f||f.style.display!=='none') cb.checked=selectAll.checked;
+      });
+      updateBtn();
+    });
+  }
+
+  if(!cfg){
+    btn.disabled=true;
+    status.textContent='Serve this report with `pr-sentinel push-azure --pr <id>` to push.';
+    return;
+  }
+
+  btn.addEventListener('click',function(){
+    var ids=selectedIds();
+    if(!ids.length) return;
+    btn.disabled=true;
+    status.className='push-status';
+    status.textContent='Pushing '+ids.length+' finding(s)…';
+    fetch(cfg.url,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ids:ids,token:cfg.token})})
+      .then(function(r){return r.json();})
+      .then(function(data){
+        if(data.error){throw new Error(data.error);}
+        var ok=0,fail=0;
+        (data.results||[]).forEach(function(res){
+          var mark=document.querySelector('.push-mark[data-finding-id="'+res.id+'"]');
+          if(mark){mark.className='push-mark '+(res.ok?'ok':'err');
+            mark.textContent=res.ok?'✓ pushed':('✗ '+(res.error||'failed'));}
+          var cb=document.querySelector('.pick[data-finding-id="'+res.id+'"]');
+          if(res.ok&&cb){cb.checked=false;cb.disabled=true;}
+          res.ok?ok++:fail++;
+        });
+        status.className='push-status '+(fail?'err':'ok');
+        status.textContent='Pushed '+ok+' finding(s)'+(fail?(', '+fail+' failed'):'')+'.';
+        updateBtn();
+      })
+      .catch(function(err){
+        status.className='push-status err';
+        status.textContent='Push failed: '+err.message;
+        btn.disabled=false;
+      });
+  });
+  updateBtn();
 })();
 """

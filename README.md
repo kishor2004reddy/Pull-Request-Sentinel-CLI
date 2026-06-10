@@ -148,6 +148,38 @@ Open `reports/review-report.md`.
 
 Lists available agents and their implementation status.
 
+### `pr-sentinel push-azure`
+
+Push selected findings from a prior review to an Azure DevOps pull request as **PR-level comment threads** — one thread per finding. You pick *which* findings to push interactively, right in the HTML report.
+
+```bash
+# 1. Review and emit the HTML report
+pr-sentinel review --base main --format all
+
+# 2. Authenticate (PAT with Code: read & write scope)
+$env:AZURE_DEVOPS_PAT = "<your-pat>"        # PowerShell
+# export AZURE_DEVOPS_PAT=<your-pat>        # bash
+
+# 3. Open the report and push selected findings to PR #124
+pr-sentinel push-azure --pr 124
+```
+
+This starts a small local server on `127.0.0.1`, opens the report in your browser, and adds checkboxes plus a **"Push selected to PR"** button. Tick the findings you want, click push, and each becomes a comment thread on the PR. Press `Ctrl+C` in the terminal when done.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--pr` | *required* | Azure DevOps pull request ID to comment on. |
+| `--report PATH` | `reports/report.json` | Report produced by a prior `review` run. |
+| `--org` / `--project` / `--repo` | auto-detected | Override the org/project/repo (otherwise parsed from the `origin` remote). |
+| `--repo-dir PATH` | cwd | Repository whose `origin` remote is parsed for the org/project/repo. |
+| `--port` | `0` | Local server port (`0` picks a free one). |
+| `--no-browser` | off | Don't auto-open the browser. |
+
+Notes:
+- **The PAT never reaches the browser.** It's read from `AZURE_DEVOPS_PAT` (or `SYSTEM_ACCESSTOKEN` in Azure Pipelines) and used only by the local server, which makes the authenticated REST calls. The browser only talks to `localhost` and carries a one-time session nonce.
+- **Idempotent.** Each thread is tagged with the finding's id, so re-pushing the same finding is skipped rather than duplicated.
+- **Auto-detection.** The org/project/repo come from your `origin` remote (HTTPS, `visualstudio.com`, or SSH forms). Pass `--org/--project/--repo` to override or if there's no Azure DevOps remote.
+
 ### `pr-sentinel cache`
 
 Inspect and manage the on-disk response cache.
@@ -312,6 +344,9 @@ src/pr_sentinel/
 ├── orchestrator.py         # parallel (agent, chunk) execution via ThreadPoolExecutor
 ├── router.py               # file-type routing table — decides which agents run per chunk
 ├── cache.py                # sha256-keyed disk cache + 90-day auto-prune
+├── push_server.py          # localhost server backing the HTML report's "Push" button
+├── integrations/
+│   └── azure_devops.py     # remote parsing + Azure DevOps PR comment-thread client
 ├── report_generator/
 │   ├── __init__.py         # build_report + JSON writer + shared report-level helpers
 │   ├── markdown.py         # Markdown renderer
@@ -335,7 +370,9 @@ tests/
 ├── test_chunker.py
 ├── test_providers.py
 ├── test_summary_agent.py
-└── test_report_generator.py
+├── test_report_generator.py
+├── test_azure_devops.py
+└── test_push_server.py
 ```
 
 ## Running tests

@@ -1,3 +1,5 @@
+import json
+import os
 import re
 import threading
 import time
@@ -13,7 +15,10 @@ from pr_sentinel import cache, orchestrator, report_generator, router, runstats,
 from pr_sentinel.diff import chunker, diff_parser, git_diff
 from pr_sentinel.agents.summary_agent import SummaryAgent
 from pr_sentinel.agents import AGENT_REGISTRY
+from pr_sentinel import push_server
+from pr_sentinel.integrations import azure_devops
 from pr_sentinel.config import (
+    AZURE_PAT_ENV_VARS,
     DEFAULT_AGENTS,
     DEFAULT_BASE_BRANCH,
     DEFAULT_CHUNK_BUDGET,
@@ -27,6 +32,7 @@ from pr_sentinel.config import (
     DEFAULT_SUMMARY_TIMEOUT,
     DEFAULT_TIMEOUT,
     IGNORE_FILE_NAME,
+    REPORT_JSON_FILENAME,
     SOURCE_DIFF_FILENAME,
     VALID_AGENTS,
     VALID_FORMATS,
@@ -565,6 +571,119 @@ def cache_prune_cmd(older_than: str, dry_run: bool) -> None:
         f"[{style}]{verb} {count} entr{'y' if count == 1 else 'ies'} "
         f"({_format_bytes(bytes_)}) older than {older_than}.[/]"
     )
+
+
+@main.command(name="push-azure")
+@click.option("--pr", "pr_id", type=int, required=True, help="Azure DevOps pull request ID to comment on.")
+@click.option(
+    "--report",
+    "report_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=DEFAULT_OUT_DIR / REPORT_JSON_FILENAME,
+    show_default=True,
+    help="Path to the report.json produced by `pr-sentinel review`.",
+)
+@click.option("--org", default=None, help="Azure DevOps organization (overrides remote detection).")
+@click.option("--project", default=None, help="Azure DevOps project (overrides remote detection).")
+@click.option("--repo", default=None, help="Azure DevOps repository (overrides remote detection).")
+@click.option(
+    "--repo-dir",
+    "repo_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Repository whose `origin` remote is parsed for org/project/repo. Defaults to cwd.",
+)
+@click.option("--port", type=int, default=0, show_default=True, help="Local server port. 0 picks a free port.")
+@click.option("--no-browser", is_flag=True, default=False, help="Don't auto-open the report in a browser.")
+def push_azure(
+    pr_id: int,
+    report_path: Path,
+    org: str | None,
+    project: str | None,
+    repo: str | None,
+    repo_dir: Path | None,
+    port: int,
+    no_browser: bool,
+) -> None:
+    """Open the HTML report and push selected findings to an Azure DevOps PR.
+
+    Reads the findings from a prior `review` run, then serves the report locally
+    so you can tick the findings you want and click "Push selected to PR". Each
+    selected finding becomes a PR-level comment thread. The Azure DevOps PAT is
+    read from $AZURE_DEVOPS_PAT (or $SYSTEM_ACCESSTOKEN) and stays server-side.
+    """
+    pat = next((os.environ[v] for v in AZURE_PAT_ENV_VARS if os.environ.get(v)), None)
+    if not pat:
+        raise click.UsageError(
+            "No Azure DevOps PAT found. Set "
+            f"{' or '.join(AZURE_PAT_ENV_VARS)} (Code: read & write scope) and retry."
+        )
+
+    if not report_path.exists():
+        raise click.UsageError(
+            f"Report not found at {report_path}. "
+            "Run `pr-sentinel review --format all` (or `json`) first."
+        )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    findings = report.get("findings", [])
+    if not findings:
+        console.print("[yellow]No findings in the report — nothing to push.[/]")
+        return
+    # Backfill ids for reports written before findings carried a stable id.
+    if any("id" not in f for f in findings):
+        report_generator._assign_finding_ids(findings)
+
+    if org and project and repo:
+        org_, project_, repo_ = org, project, repo
+    else:
+        url = git_diff.get_remote_url(cwd=repo_dir)
+        if not url:
+            raise click.UsageError(
+                "No git 'origin' remote found to detect the repository. "
+                "Pass --org, --project and --repo explicitly."
+            )
+        try:
+            d_org, d_proj, d_repo = azure_devops.parse_remote(url)
+        except azure_devops.AzureDevOpsError as e:
+            raise click.UsageError(str(e))
+        org_, project_, repo_ = org or d_org, project or d_proj, repo or d_repo
+
+    client = azure_devops.AzureDevOpsClient(org=org_, project=project_, repo=repo_, pat=pat)
+
+    def _on_event(results: list[dict]) -> None:
+        ok = sum(1 for r in results if r.get("ok"))
+        fail = len(results) - ok
+        msg = f"[green]Pushed {ok} finding(s)[/]"
+        if fail:
+            msg += f", [red]{fail} failed[/]"
+        console.print(f"{msg} to PR #{pr_id}.")
+        for r in results:
+            if not r.get("ok"):
+                console.print(f"  [red]✗[/] {r['id']}: {r.get('error', 'failed')}")
+
+    url, httpd = push_server.start_server(
+        report, client, pr_id, port=port, open_browser=not no_browser, on_event=_on_event,
+    )
+
+    console.print(
+        Panel(
+            f"[bold]Repo[/]  {org_}/{project_}/{repo_}\n"
+            f"[bold]PR[/]    #{pr_id}\n"
+            f"[bold]URL[/]   [cyan]{url}[/]\n\n"
+            "Select findings in the browser and click [bold]Push selected to PR[/].\n"
+            "Press [bold]Ctrl+C[/] here when you're done.",
+            title="[bold]PR Sentinel — push to Azure DevOps[/]",
+            border_style="cyan",
+            padding=(1, 2),
+        )
+    )
+
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Shutting down push server.[/]")
+    finally:
+        httpd.shutdown()
 
 
 @main.command(name="agents")

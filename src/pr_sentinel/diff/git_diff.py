@@ -72,6 +72,26 @@ def get_repo_root(cwd: Path | None = None) -> str | None:
     return result.stdout.strip() or None
 
 
+def get_remote_url(remote: str = "origin", cwd: Path | None = None) -> str | None:
+    """URL of the named git remote, or None if it isn't configured.
+
+    Used to auto-detect the Azure DevOps org/project/repo for `push-azure`.
+    Best-effort: never raises (a repo may have no remote, or none by that name).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", f"remote.{remote}.url"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
 def get_branch_diff(
     base: str,
     head: str = "HEAD",

@@ -106,6 +106,20 @@ NOISE_PATTERNS = [
     "*.docx", "*.xlsx", "*.pptx",
 ]
 
+# --- Azure DevOps integration -----------------------------------------------
+# REST API version used for all Azure DevOps calls.
+AZURE_API_VERSION = "7.1"
+# Environment variables searched (in order) for the Personal Access Token used
+# to authenticate the push. SYSTEM_ACCESSTOKEN is the token Azure Pipelines
+# exposes to a job, so the same command works locally and in CI.
+AZURE_PAT_ENV_VARS = ("AZURE_DEVOPS_PAT", "SYSTEM_ACCESSTOKEN")
+# Local push server defaults.
+PUSH_SERVER_HOST = "127.0.0.1"
+# Placeholder in the rendered HTML that the push server replaces with the live
+# push config (endpoint URL + one-time nonce). Left as an inert HTML comment in
+# the static on-disk report, so opening that file standalone does nothing.
+PUSH_CONFIG_PLACEHOLDER = "<!--PRS_PUSH_CONFIG-->"
+
 # --- Cache ------------------------------------------------------------------
 CACHE_DIR_ENV = "PR_SENTINEL_CACHE_DIR"
 DEFAULT_CACHE_DIR = Path.home() / ".pr-sentinel" / "cache"
