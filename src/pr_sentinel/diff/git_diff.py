@@ -92,6 +92,27 @@ def get_remote_url(remote: str = "origin", cwd: Path | None = None) -> str | Non
     return result.stdout.strip() or None
 
 
+def fetch_remote(
+    remote: str = "origin",
+    refs: list[str] | None = None,
+    cwd: Path | None = None,
+) -> None:
+    """Fetch from the named remote.
+
+    Used by --fetch so the diff uses {remote}/{base} and {remote}/{head},
+    matching exactly what Azure DevOps shows for the PR.
+
+    When ``refs`` is given, only those branches are fetched (tags skipped),
+    which is far lighter than fetching every ref on repos with many branches.
+    Full history is always fetched (never shallow) so the base...head
+    merge-base stays resolvable and the diff is correct.
+    """
+    args = ["git", "fetch", "--no-tags", remote]
+    if refs:
+        args.extend(refs)
+    _run(args, cwd=cwd)
+
+
 def get_branch_diff(
     base: str,
     head: str = "HEAD",

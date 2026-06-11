@@ -13,6 +13,7 @@ import secrets
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 from pr_sentinel.config import PUSH_CONFIG_PLACEHOLDER, PUSH_SERVER_HOST
 from pr_sentinel.integrations.azure_devops import (
@@ -65,8 +66,17 @@ def _build_handler(html_page: str, findings_by_id: dict, client, pr_id, nonce, o
             self.wfile.write(body)
 
         def do_GET(self):  # noqa: N802 (stdlib naming)
-            if self.path in ("/", "/index.html", "/report"):
+            parts = urlsplit(self.path)
+            if parts.path in ("/", "/index.html", "/report"):
                 self._send(200, html_page.encode("utf-8"), "text/html; charset=utf-8")
+            elif parts.path == "/pushed":
+                # Live list of finding ids already commented on the PR, so the
+                # page can mark them on load (and after a refresh / server restart).
+                token = (parse_qs(parts.query).get("token") or [""])[0]
+                if not secrets.compare_digest(token, nonce):
+                    self._reply({"error": "invalid or missing session token"}, 403)
+                    return
+                self._reply({"ids": sorted(client.list_thread_finding_ids(pr_id))}, 200)
             else:
                 self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -120,7 +130,9 @@ def start_server(
     }
     nonce = secrets.token_urlsafe(24)
     config_script = (
-        f'<script>window.PRS_PUSH={json.dumps({"url": "/push", "token": nonce})};</script>'
+        "<script>window.PRS_PUSH="
+        + json.dumps({"url": "/push", "statusUrl": "/pushed", "token": nonce})
+        + ";</script>"
     )
     html_page = _render_html(report).replace(PUSH_CONFIG_PLACEHOLDER, config_script)
 

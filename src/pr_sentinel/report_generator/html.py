@@ -480,10 +480,38 @@ _HTML_SCRIPT = """
     });
   }
 
+  function markPushed(id,label){
+    var mark=document.querySelector('.push-mark[data-finding-id="'+id+'"]');
+    if(mark){mark.className='push-mark ok';mark.textContent=label||'✓ pushed';}
+    var cb=document.querySelector('.pick[data-finding-id="'+id+'"]');
+    if(cb){cb.checked=false;cb.disabled=true;}
+  }
+  function markError(id,msg){
+    var mark=document.querySelector('.push-mark[data-finding-id="'+id+'"]');
+    if(mark){mark.className='push-mark err';mark.textContent='✗ '+(msg||'failed');}
+  }
+
   if(!cfg){
     btn.disabled=true;
     status.textContent='Serve this report with `pr-sentinel push-azure --pr <id>` to push.';
     return;
+  }
+
+  // On load, mark findings already commented on the PR (survives refresh and
+  // re-running the server) so you don't re-select what's already there.
+  if(cfg.statusUrl){
+    fetch(cfg.statusUrl+'?token='+encodeURIComponent(cfg.token))
+      .then(function(r){return r.json();})
+      .then(function(data){
+        var ids=(data&&data.ids)||[];
+        ids.forEach(function(id){markPushed(id,'✓ already pushed');});
+        if(ids.length){
+          status.className='push-status';
+          status.textContent=ids.length+' finding(s) already pushed to this PR.';
+        }
+        updateBtn();
+      })
+      .catch(function(){/* non-fatal: leave the page as-is */});
   }
 
   btn.addEventListener('click',function(){
@@ -499,12 +527,8 @@ _HTML_SCRIPT = """
         if(data.error){throw new Error(data.error);}
         var ok=0,fail=0;
         (data.results||[]).forEach(function(res){
-          var mark=document.querySelector('.push-mark[data-finding-id="'+res.id+'"]');
-          if(mark){mark.className='push-mark '+(res.ok?'ok':'err');
-            mark.textContent=res.ok?'✓ pushed':('✗ '+(res.error||'failed'));}
-          var cb=document.querySelector('.pick[data-finding-id="'+res.id+'"]');
-          if(res.ok&&cb){cb.checked=false;cb.disabled=true;}
-          res.ok?ok++:fail++;
+          if(res.ok){markPushed(res.id,res.skipped?'✓ already pushed':'✓ pushed');ok++;}
+          else{markError(res.id,res.error);fail++;}
         });
         status.className='push-status '+(fail?'err':'ok');
         status.textContent='Pushed '+ok+' finding(s)'+(fail?(', '+fail+' failed'):'')+'.';

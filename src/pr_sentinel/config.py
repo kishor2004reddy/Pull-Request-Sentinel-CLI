@@ -129,6 +129,8 @@ AUTO_PRUNE_AGE_SECONDS = AUTO_PRUNE_AGE_DAYS * 86400
 # --- CLI ---------------------------------------------------------------------
 DEFAULT_BASE_BRANCH = "main"
 DEFAULT_HEAD_REF = "HEAD"
+DEFAULT_REMOTE = "origin"
+DEFAULT_FETCH = False
 DEFAULT_REPORT_FORMAT = "both"
 DEFAULT_PRUNE_AGE = "30d"
 

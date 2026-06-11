@@ -22,7 +22,9 @@ from pr_sentinel.config import (
     DEFAULT_AGENTS,
     DEFAULT_BASE_BRANCH,
     DEFAULT_CHUNK_BUDGET,
+    DEFAULT_FETCH,
     DEFAULT_HEAD_REF,
+    DEFAULT_REMOTE,
     DEFAULT_MAX_FILE_SIZE,
     DEFAULT_MAX_PARALLEL,
     DEFAULT_OUT_DIR,
@@ -80,6 +82,29 @@ def main() -> None:
     help="Review a saved diff file instead of running git.",
 )
 @click.option("--staged", is_flag=True, help="Review staged changes (git diff --cached).")
+@click.option(
+    "--fetch",
+    "do_fetch",
+    is_flag=True,
+    default=DEFAULT_FETCH,
+    help=(
+        "Fetch from the named remote before diffing so the review matches what Azure DevOps shows for the PR. "
+        "Rewrites base → {remote}/{base} and head → {remote}/{current_branch}, "
+        "capturing all teammate pushes to both sides of the PR. "
+        f"Default controlled by DEFAULT_FETCH in config.py (currently {DEFAULT_FETCH})."
+    ),
+)
+@click.option(
+    "--remote",
+    default=DEFAULT_REMOTE,
+    show_default=True,
+    help=(
+        "Git remote to fetch from and diff against when --fetch is used. "
+        "Use this when your Azure DevOps remote is not named 'origin' "
+        "(e.g. --remote azure when you have both a GitHub 'origin' and an 'azure' remote). "
+        f"Default controlled by DEFAULT_REMOTE in config.py (currently {DEFAULT_REMOTE!r})."
+    ),
+)
 @click.option(
     "--repo",
     "repo_dir",
@@ -201,6 +226,8 @@ def review(
     head: str,
     diff_path: Path | None,
     staged: bool,
+    do_fetch: bool,
+    remote: str,
     repo_dir: Path | None,
     agents: str,
     out_dir: Path,
@@ -219,6 +246,8 @@ def review(
 
     if diff_path and staged:
         raise click.UsageError("--diff and --staged cannot be combined.")
+    if do_fetch and (diff_path or staged):
+        raise click.UsageError("--fetch cannot be combined with --diff or --staged.")
 
     # Resolve the model per provider: a user-supplied --model is forwarded
     # verbatim; otherwise fall back to the selected provider's own default.
@@ -236,6 +265,27 @@ def review(
         raw_diff = git_diff.get_staged_diff(cwd=repo_dir)
         source = f"staged@{repo_dir}" if repo_dir else "staged"
     else:
+        if do_fetch:
+            # Resolve the bare branch names we need *before* fetching so we can
+            # fetch just those two refs (cheap on repos with many branches)
+            # rather than every ref on the remote.
+            prefix = f"{remote}/"
+            base_branch = base[len(prefix):] if base.startswith(prefix) else base
+            if head == "HEAD":
+                current = git_diff.get_current_branch(cwd=repo_dir).strip()
+                head_branch = current or "HEAD"
+            else:
+                head_branch = head[len(prefix):] if head.startswith(prefix) else head
+
+            console.print(
+                f"[dim]Fetching {base_branch}, {head_branch} from {remote}…[/dim]"
+            )
+            git_diff.fetch_remote(
+                remote=remote, refs=[base_branch, head_branch], cwd=repo_dir
+            )
+            base = f"{prefix}{base_branch}"
+            head = f"{prefix}{head_branch}"
+
         head_display = head
         if head == "HEAD":
             try:
@@ -587,11 +637,22 @@ def cache_prune_cmd(older_than: str, dry_run: bool) -> None:
 @click.option("--project", default=None, help="Azure DevOps project (overrides remote detection).")
 @click.option("--repo", default=None, help="Azure DevOps repository (overrides remote detection).")
 @click.option(
+    "--remote",
+    default=DEFAULT_REMOTE,
+    show_default=True,
+    help=(
+        "Git remote whose URL is parsed to detect org/project/repo. "
+        "Use when your Azure DevOps remote is not named 'origin' "
+        "(e.g. --remote azure when you have both a GitHub 'origin' and an 'azure' remote). "
+        f"Default controlled by DEFAULT_REMOTE in config.py (currently {DEFAULT_REMOTE!r})."
+    ),
+)
+@click.option(
     "--repo-dir",
     "repo_dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     default=None,
-    help="Repository whose `origin` remote is parsed for org/project/repo. Defaults to cwd.",
+    help="Repository whose remote is parsed for org/project/repo. Defaults to cwd.",
 )
 @click.option("--port", type=int, default=0, show_default=True, help="Local server port. 0 picks a free port.")
 @click.option("--no-browser", is_flag=True, default=False, help="Don't auto-open the report in a browser.")
@@ -601,6 +662,7 @@ def push_azure(
     org: str | None,
     project: str | None,
     repo: str | None,
+    remote: str,
     repo_dir: Path | None,
     port: int,
     no_browser: bool,
@@ -636,11 +698,11 @@ def push_azure(
     if org and project and repo:
         org_, project_, repo_ = org, project, repo
     else:
-        url = git_diff.get_remote_url(cwd=repo_dir)
+        url = git_diff.get_remote_url(remote=remote, cwd=repo_dir)
         if not url:
             raise click.UsageError(
-                "No git 'origin' remote found to detect the repository. "
-                "Pass --org, --project and --repo explicitly."
+                f"No git '{remote}' remote found to detect the repository. "
+                "Pass --org, --project and --repo explicitly, or use --remote to name the correct remote."
             )
         try:
             d_org, d_proj, d_repo = azure_devops.parse_remote(url)
@@ -678,12 +740,18 @@ def push_azure(
         )
     )
 
+    # Poll in short intervals rather than blocking forever: on Windows a
+    # no-timeout wait() prevents the interpreter from delivering Ctrl+C, so the
+    # KeyboardInterrupt would never fire and the server wouldn't stop.
+    stop = threading.Event()
     try:
-        threading.Event().wait()
+        while not stop.wait(0.5):
+            pass
     except KeyboardInterrupt:
         console.print("\n[dim]Shutting down push server.[/]")
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 @main.command(name="agents")
