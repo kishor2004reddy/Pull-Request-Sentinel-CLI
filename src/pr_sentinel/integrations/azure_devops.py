@@ -140,15 +140,35 @@ class AzureDevOpsClient:
         return ids
 
     def create_pr_thread(
-        self, pr_id: int, content: str, finding_id: str | None = None
+        self,
+        pr_id: int,
+        content: str,
+        finding_id: str | None = None,
+        file_path: str | None = None,
+        line: int | None = None,
     ) -> dict:
-        """Create a PR-level (overview) comment thread and return the response."""
+        """Create a comment thread and return the response.
+
+        When both ``file_path`` and ``line`` are given the thread is pinned to
+        that line on the new ("right") side of the diff, so it appears in the
+        Files tab. Otherwise — or when either is missing — it falls back to a
+        PR-level (overview) thread, so vaguely-located findings still post.
+        """
         body: dict = {
             "comments": [
                 {"parentCommentId": 0, "content": content, "commentType": 1}
             ],
             "status": 1,  # active
         }
+        if file_path and line:
+            # Azure requires a repo-relative path with a leading slash, and
+            # 1-based line/offset; offset 1 anchors at the start of the line.
+            norm_path = "/" + str(file_path).lstrip("/")
+            body["threadContext"] = {
+                "filePath": norm_path,
+                "rightFileStart": {"line": line, "offset": 1},
+                "rightFileEnd": {"line": line, "offset": 1},
+            }
         if finding_id:
             body["properties"] = {
                 THREAD_PROPERTY_KEY: {
@@ -157,6 +177,18 @@ class AzureDevOpsClient:
                 }
             }
         return self._request("POST", self._threads_url(pr_id), body)
+
+
+def line_from_hint(line_hint) -> int | None:
+    """Extract a 1-based line number from a hint like '+42', '42', or '+42,7'.
+
+    Returns ``None`` when no number is present, so the caller can fall back to a
+    PR-level thread.
+    """
+    if not line_hint:
+        return None
+    m = re.search(r"\d+", str(line_hint))
+    return int(m.group()) if m else None
 
 
 _SEVERITY_EMOJI = {"High": "🔴", "Medium": "🟠", "Low": "🔵"}

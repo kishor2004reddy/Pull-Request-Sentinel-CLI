@@ -20,6 +20,7 @@ from pr_sentinel.integrations.azure_devops import (
     AzureDevOpsClient,
     AzureDevOpsError,
     format_finding_comment,
+    line_from_hint,
 )
 from pr_sentinel.report_generator import _render_html
 
@@ -46,7 +47,13 @@ def _push_findings(
             results.append({"id": fid, "ok": True, "skipped": True})
             continue
         try:
-            client.create_pr_thread(pr_id, format_finding_comment(finding), fid)
+            client.create_pr_thread(
+                pr_id,
+                format_finding_comment(finding),
+                fid,
+                file_path=finding.get("file") or None,
+                line=line_from_hint(finding.get("lineHint")),
+            )
             results.append({"id": fid, "ok": True})
         except AzureDevOpsError as e:
             results.append({"id": fid, "ok": False, "error": str(e)})

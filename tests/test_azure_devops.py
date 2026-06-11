@@ -5,6 +5,7 @@ from pr_sentinel.integrations.azure_devops import (
     AzureDevOpsClient,
     AzureDevOpsError,
     format_finding_comment,
+    line_from_hint,
     parse_remote,
 )
 
@@ -42,6 +43,53 @@ def test_threads_url_is_well_formed():
     url = client._threads_url(42)
     assert "/o/p/_apis/git/repositories/r/pullRequests/42/threads" in url
     assert "api-version=" in url
+
+
+@pytest.mark.parametrize(
+    "hint, expected",
+    [("+42", 42), ("42", 42), ("+42,7", 42), ("", None), (None, None),
+     ("no-number", None)],
+)
+def test_line_from_hint(hint, expected):
+    assert line_from_hint(hint) == expected
+
+
+def _capture_body(client):
+    """Patch ``_request`` to record the POST body instead of calling Azure."""
+    captured = {}
+
+    def fake_request(method, url, body=None):
+        captured["method"] = method
+        captured["body"] = body
+        return {"id": 1}
+
+    client._request = fake_request
+    return captured
+
+
+def test_create_pr_thread_pins_to_line_when_file_and_line_given():
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    captured = _capture_body(client)
+    client.create_pr_thread(7, "hi", finding_id="a", file_path="src/app.py", line=42)
+    ctx = captured["body"]["threadContext"]
+    # Azure needs a leading slash and 1-based right-side line/offset.
+    assert ctx["filePath"] == "/src/app.py"
+    assert ctx["rightFileStart"] == {"line": 42, "offset": 1}
+    assert ctx["rightFileEnd"] == {"line": 42, "offset": 1}
+
+
+def test_create_pr_thread_leading_slash_not_doubled():
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    captured = _capture_body(client)
+    client.create_pr_thread(7, "hi", file_path="/src/app.py", line=1)
+    assert captured["body"]["threadContext"]["filePath"] == "/src/app.py"
+
+
+def test_create_pr_thread_falls_back_to_pr_level_without_line():
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    captured = _capture_body(client)
+    client.create_pr_thread(7, "hi", finding_id="a", file_path="src/app.py", line=None)
+    assert "threadContext" not in captured["body"]
 
 
 def test_format_finding_comment_includes_all_sections():
