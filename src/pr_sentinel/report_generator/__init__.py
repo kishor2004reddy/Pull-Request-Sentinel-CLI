@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pr_sentinel.config import (
+    ALIGNMENT_REPORT_HTML_FILENAME,
+    ALIGNMENT_REPORT_JSON_FILENAME,
     REPORT_HTML_FILENAME,
     REPORT_JSON_FILENAME,
     REPORT_MARKDOWN_FILENAME,
@@ -137,6 +139,20 @@ def write_html(report: dict, out_dir: Path) -> Path:
     return path
 
 
+def write_alignment_json(report: dict, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / ALIGNMENT_REPORT_JSON_FILENAME
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return path
+
+
+def write_alignment_html(report: dict, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / ALIGNMENT_REPORT_HTML_FILENAME
+    path.write_text(_render_alignment_html(report), encoding="utf-8")
+    return path
+
+
 # --- Report-level helpers shared by the renderers ---------------------------
 
 def _merge_verdict(report: dict) -> str:
@@ -243,11 +259,17 @@ def _agent_summary_data(report: dict) -> tuple[list[dict], dict]:
 # The renderers depend on the helpers above, so import them last. This also
 # re-exports the render functions on the package for the writers and tests.
 from pr_sentinel.report_generator.markdown import _render_markdown  # noqa: E402
-from pr_sentinel.report_generator.html import _render_html, _rich_text_html  # noqa: E402
+from pr_sentinel.report_generator.html import (  # noqa: E402
+    _render_alignment_html,
+    _render_html,
+    _rich_text_html,
+)
 
 __all__ = [
     "build_report",
     "write_json",
     "write_markdown",
     "write_html",
+    "write_alignment_json",
+    "write_alignment_html",
 ]

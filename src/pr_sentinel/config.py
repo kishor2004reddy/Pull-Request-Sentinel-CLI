@@ -75,6 +75,7 @@ REPORT_JSON_FILENAME = "report.json"
 REPORT_MARKDOWN_FILENAME = "review-report.md"
 REPORT_HTML_FILENAME = "review-report.html"
 ALIGNMENT_REPORT_JSON_FILENAME = "alignment-report.json"
+ALIGNMENT_REPORT_HTML_FILENAME = "alignment-report.html"
 SOURCE_DIFF_FILENAME = "source.diff"
 IGNORE_FILE_NAME = ".prsentinelignore"
 

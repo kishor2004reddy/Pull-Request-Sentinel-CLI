@@ -185,6 +185,53 @@ def test_html_includes_push_ui_and_config_placeholder():
     assert f'data-finding-id="{fid}"' in html
 
 
+def _alignment_report(criteria: list[dict], findings: list[dict] | None = None) -> dict:
+    findings = findings or []
+    report = report_generator.build_report(
+        agent_results=[{"agent": "Alignment Agent", "findings": findings}],
+        base_branch="main",
+        source="alignment:PR#42",
+    )
+    report["alignment"] = [
+        {
+            "workItem": {"id": 1234, "type": "User Story", "state": "Active",
+                         "title": "Add CSV export"},
+            "verdict": "Partial",
+            "confidence": "High",
+            "summary": "Export works but empty-list is missing.",
+            "truncatedDiff": False,
+            "criteria": criteria,
+        }
+    ]
+    return report
+
+
+def test_render_alignment_html_has_verdict_matrix_and_gaps():
+    criteria = [
+        {"criterion": "Export downloads a CSV", "status": "Met", "evidence": "Export()"},
+        {"criterion": "Empty list shows a message", "status": "Not met", "evidence": "missing"},
+        {"criterion": "Localized in French", "status": "Unverifiable", "evidence": "not in diff"},
+    ]
+    findings = [_finding("High", "a.cs", recommendation="handle empty list")]
+    html = report_generator._render_alignment_html(_alignment_report(criteria, findings))
+
+    assert "Requirement Alignment" in html
+    assert "verdict-badge" in html and "Partial" in html
+    assert 'class="trace"' in html              # traceability matrix
+    assert "cov-bar" in html                    # coverage bar
+    assert "Export downloads a CSV" in html
+    assert "Empty list shows a message" in html
+    assert "Gaps (1)" in html
+    assert "handle empty list" in html
+
+
+def test_render_alignment_html_no_criteria_notes_coarse_item():
+    html = report_generator._render_alignment_html(_alignment_report([]))
+    assert "No acceptance criteria" in html
+    # No criteria → still renders, with an empty Gaps section.
+    assert "Gaps (0)" in html
+
+
 def test_key_recommendations_deduplicated():
     findings = [
         _finding("High", "a.py", recommendation="same fix"),

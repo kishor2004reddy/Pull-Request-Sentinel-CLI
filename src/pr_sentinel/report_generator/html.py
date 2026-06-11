@@ -339,6 +339,240 @@ def _render_html(report: dict) -> str:
     return "\n".join(p) + "\n"
 
 
+# Alignment verdict badge palette (text, background, accent), reusing the risk
+# colours: Satisfied≈clean, Partial≈medium, Not satisfied/Unknown≈high.
+_VERDICT_COLORS = {
+    "Satisfied": _RISK_COLORS["None"],
+    "Partial": _RISK_COLORS["Medium"],
+    "Not satisfied": _RISK_COLORS["High"],
+    "Unknown": _RISK_COLORS["Unknown"],
+}
+
+# Per-criterion: (icon, label-prefix, css-class, coverage-bar-segment-class).
+_CRITERION_HTML = {
+    "Met": ("✓", "met", "cov-seg-met"),
+    "Partial": ("~", "partial", "cov-seg-partial"),
+    "Not met": ("✗", "notmet", "cov-seg-notmet"),
+    "Unverifiable": ("?", "unverifiable", "cov-seg-unv"),
+}
+_STATUS_ORDER = ("Met", "Partial", "Not met", "Unverifiable")
+
+
+def _coverage_bar(counts: dict[str, int], total: int) -> str:
+    """A stacked proportional bar of criterion statuses (met/partial/…)."""
+    if total <= 0:
+        return ""
+    segs: list[str] = []
+    for status in _STATUS_ORDER:
+        n = counts.get(status, 0)
+        if not n:
+            continue
+        _, _, seg_cls = _CRITERION_HTML[status]
+        pct = n * 100 / total
+        segs.append(f'<span class="{seg_cls}" style="width:{pct:.4g}%" title="{n} {status}"></span>')
+    return f'<div class="cov-bar">{"".join(segs)}</div>'
+
+
+def _render_alignment_html(report: dict) -> str:
+    """Render the requirement-alignment report: per work item a scorecard +
+    traceability matrix (criterion → status → evidence), then the gap findings.
+
+    `report` is the dict written by `review-alignment` — a standard report
+    envelope plus an `alignment` list of per-work-item sections. Gaps are
+    read-only here; push them via `push-azure --report alignment-report.json`.
+    """
+    sections = report.get("alignment", [])
+    findings = report.get("findings", [])
+    repo_root = report.get("repoRoot")
+
+    p: list[str] = []
+    p.append("<!DOCTYPE html>")
+    p.append('<html lang="en"><head>')
+    p.append('<meta charset="utf-8">')
+    p.append('<meta name="viewport" content="width=device-width, initial-scale=1">')
+    p.append("<title>PR Sentinel — Requirement Alignment</title>")
+    p.append(f"<style>{_HTML_STYLE}{_ALIGNMENT_STYLE}</style>")
+    # The push server replaces this with a <script> defining window.PRS_PUSH;
+    # left inert in the on-disk report so opening it standalone does nothing.
+    p.append(PUSH_CONFIG_PLACEHOLDER)
+    p.append("</head><body>")
+    p.append('<main class="wrap">')
+
+    # Header
+    p.append('<header class="hdr">')
+    p.append('<div class="hdr-title">🛡️ PR Sentinel <span class="hdr-sub">Requirement Alignment</span></div>')
+    meta = [
+        f"base <code>{_e(report['baseBranch'])}</code>",
+        f"source <code>{_e(report['source'])}</code>",
+        f"{len(sections)} work item(s)",
+        _e(report.get("reviewedAt")),
+    ]
+    p.append('<div class="hdr-meta">' + " · ".join(meta) + "</div>")
+    p.append("</header>")
+
+    # Push toolbar — tick verdicts and gaps below, then push the selection.
+    # Functional only when served by `pr-sentinel push-azure` (which injects
+    # PRS_PUSH); otherwise the JS disables the button with a hint.
+    p.append('<div class="push-bar" id="push-bar">')
+    p.append('<label class="push-all"><input type="checkbox" id="push-select-all"> Select all</label>')
+    p.append('<button class="push-btn" id="push-btn" type="button" disabled>Push selected to PR</button>')
+    p.append('<span class="push-status" id="push-status"></span>')
+    p.append("</div>")
+
+    if not sections:
+        p.append('<p class="empty">No work items reviewed.</p>')
+
+    for s in sections:
+        wi = s.get("workItem", {})
+        verdict = s.get("verdict") or "Unknown"
+        fg, bg, accent = _VERDICT_COLORS.get(verdict, _VERDICT_COLORS["Unknown"])
+        conf = s.get("confidence") or "Low"
+        conf_note = ' <span class="conf">low confidence</span>' if conf == "Low" else ""
+
+        criteria = s.get("criteria") or []
+        counts = {st: sum(1 for c in criteria if c.get("status") == st) for st in _STATUS_ORDER}
+        total = len(criteria)
+        checkable = total - counts["Unverifiable"]
+        met = counts["Met"]
+
+        # Verdict is pushable as a summary comment; id prefixed so the server
+        # routes it to upsert_alignment_comment (vs create thread for gaps).
+        align_id = html.escape(f"align:{wi.get('id')}", quote=True)
+        p.append('<section class="block">')
+        p.append(
+            '<div class="wi-head">'
+            f'<input type="checkbox" class="pick" data-finding-id="{align_id}" '
+            'aria-label="Select verdict to push">'
+            f'<span class="wi-id">#{_e(wi.get("id"))}</span>'
+            f'<span class="wi-type">{_e(wi.get("type") or "Work Item")}</span>'
+            + (f'<span class="wi-state">{_e(wi.get("state"))}</span>' if wi.get("state") else "")
+            + f'<span class="wi-title">{_e(wi.get("title"))}</span>'
+            f'<span class="push-mark" data-finding-id="{align_id}"></span>'
+            "</div>"
+        )
+
+        # Scorecard: verdict badge + coverage bar + legend.
+        p.append('<div class="scorecard">')
+        p.append(
+            f'<span class="verdict-badge" style="color:{fg};background:{bg};'
+            f'border-left:5px solid {accent}">{_e(verdict)}{conf_note}</span>'
+        )
+        if total:
+            cov_label = f"{met}/{checkable} met" if checkable else "no checkable criteria"
+            legend = " · ".join(
+                f'<b>{counts[st]}</b> {st}' for st in _STATUS_ORDER if counts[st]
+            )
+            p.append(
+                '<div class="cov">'
+                + _coverage_bar(counts, total)
+                + f'<div class="cov-legend"><span>Coverage: <b>{cov_label}</b></span>'
+                + (f"<span>{legend}</span>" if legend else "")
+                + "</div></div>"
+            )
+        p.append("</div>")
+
+        if s.get("summary"):
+            p.append(f'<p class="summary-line">{_e(s.get("summary"))}</p>')
+        if s.get("truncatedDiff"):
+            p.append('<p class="note">⚠ Diff was truncated for size — this verdict is partial.</p>')
+
+        # Traceability matrix.
+        if criteria:
+            p.append('<table class="trace"><thead><tr>'
+                     "<th>Status</th><th>Criterion</th><th>Evidence</th>"
+                     "</tr></thead><tbody>")
+            for c in criteria:
+                status = c.get("status", "Unverifiable")
+                icon, cls, _ = _CRITERION_HTML.get(status, ("?", "unverifiable", "cov-seg-unv"))
+                ev = c.get("evidence", "")
+                ev_html = _rich_text_html(ev, repo_root) if str(ev).strip() else "—"
+                p.append(
+                    f'<tr class="crit-{cls}">'
+                    f'<td class="status"><span class="crit-icon">{icon}</span> {_e(status)}</td>'
+                    f'<td>{_e(c.get("criterion"))}</td>'
+                    f'<td class="crit-ev">{ev_html}</td>'
+                    "</tr>"
+                )
+            p.append("</tbody></table>")
+        else:
+            p.append('<p class="note">No acceptance criteria on this item — judged against title/description.</p>')
+        p.append("</section>")
+
+    # Gaps (read-only finding cards, reusing the findings styling).
+    p.append('<section class="block">')
+    p.append(f"<h2>Gaps ({len(findings)})</h2>")
+    if not findings:
+        p.append('<p class="empty">No gaps — every checkable criterion is met. 🎉</p>')
+    else:
+        for severity in ("High", "Medium", "Low"):
+            for f in (x for x in findings if x["severity"] == severity):
+                sev_fg, sev_bg = _SEV_COLORS[severity]
+                file_html = _file_cell(f["file"], f.get("lineHint"), repo_root)
+                fid = html.escape(str(f.get("id", "")), quote=True)
+                p.append(f'<details class="finding" data-sev="{severity}" data-finding-id="{fid}" open>')
+                p.append(
+                    "<summary>"
+                    f'<input type="checkbox" class="pick" data-finding-id="{fid}" '
+                    'aria-label="Select gap to push">'
+                    f'<span class="badge" style="color:{sev_fg};background:{sev_bg}">{severity}</span>'
+                    f'<span class="file">{file_html}</span>'
+                    f'<span class="push-mark" data-finding-id="{fid}"></span>'
+                    "</summary>"
+                )
+                p.append('<div class="finding-body">')
+                p.append(f'<p><span class="lbl">Issue.</span> {_rich_text_html(f.get("issue", ""), repo_root)}</p>')
+                if str(f.get("reasoning", "")).strip():
+                    p.append(f'<p><span class="lbl">Reasoning.</span> {_rich_text_html(f["reasoning"], repo_root)}</p>')
+                if str(f.get("recommendation", "")).strip():
+                    p.append(f'<p><span class="lbl">Recommendation.</span> {_rich_text_html(f["recommendation"], repo_root)}</p>')
+                p.append("</div></details>")
+        p.append(
+            '<p class="note">Push these gaps as PR comments with '
+            "<code>pr-sentinel push-azure --report alignment-report.json</code>.</p>"
+        )
+    p.append("</section>")
+
+    p.append('<footer class="ftr">Generated by PR Sentinel.</footer>')
+    p.append("</main>")
+    p.append(f"<script>{_HTML_SCRIPT}</script>")
+    p.append("</body></html>")
+    return "\n".join(p) + "\n"
+
+
+_ALIGNMENT_STYLE = """
+.wi-head .pick{flex:none;width:16px;height:16px;cursor:pointer;}
+.wi-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+.wi-id{font-weight:700;}
+.wi-type{font-size:12px;color:var(--muted);background:#eaeef2;padding:1px 8px;border-radius:12px;}
+.wi-state{font-size:12px;color:var(--muted);}
+.wi-title{font-size:16px;font-weight:600;}
+.scorecard{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:12px;}
+.verdict-badge{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;
+  padding:8px 14px;border-radius:8px;white-space:nowrap;}
+.verdict-badge .conf{font-size:11px;font-weight:500;text-transform:none;letter-spacing:0;opacity:.85;}
+.cov{flex:1;min-width:220px;}
+.cov-bar{display:flex;height:14px;border-radius:7px;overflow:hidden;background:#eaeef2;}
+.cov-bar span{display:block;height:100%;}
+.cov-seg-met{background:#1a7f37;}
+.cov-seg-partial{background:#bf8700;}
+.cov-seg-notmet{background:#d1242f;}
+.cov-seg-unv{background:#8c959f;}
+.cov-legend{font-size:12px;color:var(--muted);margin-top:6px;display:flex;gap:14px;flex-wrap:wrap;}
+.cov-legend b{color:var(--ink);}
+.summary-line{font-size:14px;margin:0 0 12px;}
+table.trace{width:100%;border-collapse:collapse;font-size:14px;}
+table.trace th,table.trace td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;}
+table.trace thead th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.4px;}
+table.trace td.status{white-space:nowrap;font-weight:600;}
+table.trace .crit-icon{font-weight:700;}
+.crit-met td.status{color:#1a7f37;}
+.crit-partial td.status{color:#bf8700;}
+.crit-notmet td.status{color:#d1242f;}
+.crit-unverifiable td.status{color:#8c959f;}
+table.trace td.crit-ev{color:var(--muted);}
+"""
+
+
 _HTML_STYLE = """
 :root{--bg:#f4f5f7;--card:#fff;--ink:#1f2328;--muted:#656d76;--line:#d0d7de;}
 *{box-sizing:border-box;}

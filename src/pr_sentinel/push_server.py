@@ -19,34 +19,57 @@ from pr_sentinel.config import PUSH_CONFIG_PLACEHOLDER, PUSH_SERVER_HOST
 from pr_sentinel.integrations.azure_devops import (
     AzureDevOpsClient,
     AzureDevOpsError,
+    WorkItem,
+    format_alignment_comment,
     format_finding_comment,
     line_from_hint,
 )
-from pr_sentinel.report_generator import _render_html
+from pr_sentinel.report_generator import _render_alignment_html, _render_html
 
 
-def _push_findings(
+def _push_alignment(client: AzureDevOpsClient, pr_id: int, section: dict) -> dict:
+    """Post (or refresh) one work item's alignment-summary comment."""
+    wi_dict = section.get("workItem", {})
+    wi = WorkItem(
+        id=int(wi_dict.get("id", 0) or 0),
+        type=str(wi_dict.get("type", "") or ""),
+        state=str(wi_dict.get("state", "") or ""),
+        title=str(wi_dict.get("title", "") or ""),
+    )
+    content = format_alignment_comment(wi, section)
+    client.upsert_alignment_comment(pr_id, wi.id, content)
+    # upsert always refreshes, so report it as updated rather than skipped.
+    return {"ok": True, "updated": True}
+
+
+def _push_items(
     client: AzureDevOpsClient,
     pr_id: int,
     findings_by_id: dict[str, dict],
+    alignment_by_id: dict[str, dict],
     ids: list[str],
 ) -> list[dict]:
-    """Create one PR comment thread per selected finding; return per-id results.
+    """Push each selected item; route ``align:*`` ids to summary comments and
+    finding ids to comment threads. Returns one result dict per id.
 
-    Findings already posted on a previous run (detected via the thread property
-    marker) are reported as ``ok`` with ``skipped: True`` rather than duplicated.
+    Gap findings already posted on a previous run (detected via the thread
+    property marker) are reported as ``ok`` with ``skipped: True`` rather than
+    duplicated. Alignment summaries are upserted, so they always refresh.
     """
     already = client.list_thread_finding_ids(pr_id)
     results: list[dict] = []
     for fid in ids:
-        finding = findings_by_id.get(fid)
-        if finding is None:
-            results.append({"id": fid, "ok": False, "error": "unknown finding"})
-            continue
-        if fid in already:
-            results.append({"id": fid, "ok": True, "skipped": True})
-            continue
         try:
+            if fid in alignment_by_id:
+                results.append({"id": fid, **_push_alignment(client, pr_id, alignment_by_id[fid])})
+                continue
+            finding = findings_by_id.get(fid)
+            if finding is None:
+                results.append({"id": fid, "ok": False, "error": "unknown item"})
+                continue
+            if fid in already:
+                results.append({"id": fid, "ok": True, "skipped": True})
+                continue
             client.create_pr_thread(
                 pr_id,
                 format_finding_comment(finding),
@@ -60,7 +83,7 @@ def _push_findings(
     return results
 
 
-def _build_handler(html_page: str, findings_by_id: dict, client, pr_id, nonce, on_event):
+def _build_handler(html_page: str, findings_by_id: dict, alignment_by_id: dict, client, pr_id, nonce, on_event):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # silence default stderr logging
             pass
@@ -104,7 +127,7 @@ def _build_handler(html_page: str, findings_by_id: dict, client, pr_id, nonce, o
             if not ids:
                 self._reply({"error": "no findings selected"}, 400)
                 return
-            results = _push_findings(client, pr_id, findings_by_id, ids)
+            results = _push_items(client, pr_id, findings_by_id, alignment_by_id, ids)
             on_event(results)
             self._reply({"results": results}, 200)
 
@@ -135,15 +158,28 @@ def start_server(
     findings_by_id = {
         f["id"]: f for f in report.get("findings", []) if f.get("id")
     }
+    # Alignment reports carry per-work-item verdict sections, pushable as summary
+    # comments under an "align:<workItemId>" id. Their presence also selects the
+    # alignment renderer (verdict scorecard + traceability matrix).
+    alignment_sections = report.get("alignment") or []
+    alignment_by_id = {
+        f"align:{s['workItem']['id']}": s
+        for s in alignment_sections
+        if s.get("workItem", {}).get("id") is not None
+    }
+    render = _render_alignment_html if alignment_sections else _render_html
+
     nonce = secrets.token_urlsafe(24)
     config_script = (
         "<script>window.PRS_PUSH="
         + json.dumps({"url": "/push", "statusUrl": "/pushed", "token": nonce})
         + ";</script>"
     )
-    html_page = _render_html(report).replace(PUSH_CONFIG_PLACEHOLDER, config_script)
+    html_page = render(report).replace(PUSH_CONFIG_PLACEHOLDER, config_script)
 
-    handler = _build_handler(html_page, findings_by_id, client, pr_id, nonce, on_event)
+    handler = _build_handler(
+        html_page, findings_by_id, alignment_by_id, client, pr_id, nonce, on_event
+    )
     httpd = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{httpd.server_address[1]}/"
 

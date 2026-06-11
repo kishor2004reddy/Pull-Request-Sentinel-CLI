@@ -19,7 +19,6 @@ from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel import push_server
 from pr_sentinel.integrations import azure_devops
 from pr_sentinel.config import (
-    ALIGNMENT_REPORT_JSON_FILENAME,
     AZURE_PAT_ENV_VARS,
     DEFAULT_AGENTS,
     DEFAULT_BASE_BRANCH,
@@ -541,6 +540,15 @@ def review(
 
     console.print(ui.reports_panel(written))
 
+    # Pushing needs report.json, so only hint when JSON was written.
+    findings = report["findings"]
+    if findings and out_format in ("json", "both", "all"):
+        report_json = out_dir / REPORT_JSON_FILENAME
+        console.print(
+            f"[dim]Post the {len(findings)} finding(s) as PR comments with:[/] "
+            f"[cyan]pr-sentinel push-azure --pr <id> --report {report_json}[/]"
+        )
+
 
 @main.group(name="cache")
 def cache_group() -> None:
@@ -690,11 +698,13 @@ def push_azure(
         )
     report = json.loads(report_path.read_text(encoding="utf-8"))
     findings = report.get("findings", [])
-    if not findings:
+    # An alignment report is pushable even with no gap findings — its per-work-item
+    # verdicts can be posted as summary comments.
+    if not findings and not report.get("alignment"):
         console.print("[yellow]No findings in the report — nothing to push.[/]")
         return
     # Backfill ids for reports written before findings carried a stable id.
-    if any("id" not in f for f in findings):
+    if findings and any("id" not in f for f in findings):
         report_generator._assign_finding_ids(findings)
 
     if org and project and repo:
@@ -992,9 +1002,8 @@ def review_alignment(
     )
     report["alignment"] = alignment_sections
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    report_path = out_dir / ALIGNMENT_REPORT_JSON_FILENAME
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report_path = report_generator.write_alignment_json(report, out_dir)
+    html_path = report_generator.write_alignment_html(report, out_dir)
 
     console.print(
         ui.runstats_panel(
@@ -1004,11 +1013,12 @@ def review_alignment(
             cache_enabled=use_cache,
         )
     )
-    console.print(ui.reports_panel([report_path]))
-    if all_findings:
+    console.print(ui.reports_panel([report_path, html_path]))
+
+    if pr_id:
         console.print(
-            f"[dim]Post the {len(all_findings)} gap(s) as PR comments with:[/] "
-            f"[cyan]pr-sentinel push-azure --pr {pr_id or '<id>'} --report {report_path}[/]"
+            "[dim]Select verdicts and gaps to post to the PR with:[/] "
+            f"[cyan]pr-sentinel push-azure --pr {pr_id} --report {report_path}[/]"
         )
 
 

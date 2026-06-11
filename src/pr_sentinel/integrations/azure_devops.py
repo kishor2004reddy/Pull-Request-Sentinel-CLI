@@ -28,6 +28,11 @@ from pr_sentinel.config import AZURE_API_VERSION, AZURE_WORK_ITEM_FIELDS
 # properties are a typed dict: {"name": {"$type": "...", "$value": ...}}.
 THREAD_PROPERTY_KEY = "PRSentinelFindingId"
 
+# Marker on the single alignment-summary thread per work item. Keyed by work
+# item id so a re-run updates the existing summary comment instead of stacking a
+# new one each time.
+ALIGNMENT_THREAD_PROPERTY_KEY = "PRSentinelAlignmentWorkItem"
+
 
 class AzureDevOpsError(Exception):
     """Remote parsing failed, or an Azure DevOps API call returned an error."""
@@ -201,6 +206,67 @@ class AzureDevOpsClient:
             }
         return self._request("POST", self._threads_url(pr_id), body)
 
+    def _thread_comment_url(self, pr_id: int, thread_id: int, comment_id: int) -> str:
+        return (
+            f"{self.base_url}/{quote(self.org)}/{quote(self.project)}"
+            f"/_apis/git/repositories/{quote(self.repo)}"
+            f"/pullRequests/{pr_id}/threads/{thread_id}/comments/{comment_id}"
+            f"?api-version={self.api_version}"
+        )
+
+    def _find_alignment_thread(self, pr_id: int, marker: str) -> tuple[int, int] | None:
+        """Locate this work item's existing alignment-summary thread.
+
+        Returns ``(thread_id, first_comment_id)`` when a prior summary thread for
+        ``marker`` (the work item id) is found, else ``None``. Best-effort: returns
+        ``None`` if threads can't be listed.
+        """
+        try:
+            data = self._request("GET", self._threads_url(pr_id))
+        except AzureDevOpsError:
+            return None
+        for thread in data.get("value", []):
+            prop = (thread.get("properties") or {}).get(ALIGNMENT_THREAD_PROPERTY_KEY)
+            if isinstance(prop, dict) and str(prop.get("$value")) == marker:
+                comments = thread.get("comments") or []
+                if thread.get("id") and comments and comments[0].get("id"):
+                    return int(thread["id"]), int(comments[0]["id"])
+        return None
+
+    def upsert_alignment_comment(
+        self, pr_id: int, work_item_id: int, content: str
+    ) -> dict:
+        """Post (or refresh) the alignment-summary comment for one work item.
+
+        If a prior summary thread for this work item exists, its comment is
+        updated in place; otherwise a new PR-level thread is created, tagged with
+        the work-item marker so the next run finds it. Falls back to creating a
+        fresh thread if the in-place update fails.
+        """
+        marker = str(work_item_id)
+        existing = self._find_alignment_thread(pr_id, marker)
+        if existing:
+            thread_id, comment_id = existing
+            try:
+                return self._request(
+                    "PATCH",
+                    self._thread_comment_url(pr_id, thread_id, comment_id),
+                    {"content": content},
+                )
+            except AzureDevOpsError:
+                pass  # fall through to creating a new thread
+        body = {
+            "comments": [{"parentCommentId": 0, "content": content, "commentType": 1}],
+            "status": 1,
+            "properties": {
+                ALIGNMENT_THREAD_PROPERTY_KEY: {
+                    "$type": "System.String",
+                    "$value": marker,
+                }
+            },
+        }
+        return self._request("POST", self._threads_url(pr_id), body)
+
     def get_pr_work_items(self, pr_id: int) -> list[int]:
         """Return the IDs of the work items linked to a pull request.
 
@@ -326,6 +392,62 @@ def line_from_hint(line_hint) -> int | None:
         return None
     m = re.search(r"\d+", str(line_hint))
     return int(m.group()) if m else None
+
+
+_ALIGNMENT_VERDICT_EMOJI = {
+    "Satisfied": "✅",
+    "Partial": "🟠",
+    "Not satisfied": "🔴",
+    "Unknown": "⚪",
+}
+_CRITERION_EMOJI = {
+    "Met": "✅",
+    "Partial": "🟠",
+    "Not met": "❌",
+    "Unverifiable": "❔",
+}
+
+
+def format_alignment_comment(work_item, result: dict) -> str:
+    """Render an alignment verdict + criteria checklist as a PR comment body.
+
+    ``work_item`` is a :class:`WorkItem`; ``result`` is the Alignment Agent's
+    output (verdict/confidence/summary/criteria). Returns Azure-flavoured
+    markdown (it renders comment tables), kept idempotent so re-posting the same
+    review produces the same body.
+    """
+    verdict = result.get("verdict", "Unknown")
+    emoji = _ALIGNMENT_VERDICT_EMOJI.get(verdict, "⚪")
+    confidence = result.get("confidence", "Low")
+    conf_note = " _(low confidence)_" if confidence == "Low" else ""
+
+    wi_type = work_item.type or "Work Item"
+    lines = [
+        "🛡️ **PR Sentinel — Requirement Alignment**",
+        "",
+        f"**#{work_item.id} · {wi_type} · {work_item.title}**",
+        "",
+        f"{emoji} **Alignment: {verdict}**{conf_note}",
+    ]
+    summary = str(result.get("summary", "")).strip()
+    if summary:
+        lines += ["", summary]
+
+    criteria = result.get("criteria") or []
+    if criteria:
+        lines += ["", "| | Criterion | Status |", "|--|--|--|"]
+        for c in criteria:
+            status = c.get("status", "Unverifiable")
+            cicon = _CRITERION_EMOJI.get(status, "❔")
+            text = str(c.get("criterion", "")).strip().replace("|", "\\|") or "—"
+            lines.append(f"| {cicon} | {text} | {status} |")
+
+        met = sum(1 for c in criteria if c.get("status") == "Met")
+        checkable = sum(1 for c in criteria if c.get("status") != "Unverifiable")
+        if checkable:
+            lines += ["", f"_{met}/{checkable} checkable criteria met._"]
+
+    return "\n".join(lines)
 
 
 _SEVERITY_EMOJI = {"High": "🔴", "Medium": "🟠", "Low": "🔵"}

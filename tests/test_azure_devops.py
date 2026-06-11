@@ -6,6 +6,7 @@ from pr_sentinel.integrations.azure_devops import (
     AzureDevOpsError,
     WorkItem,
     _html_to_text,
+    format_alignment_comment,
     format_finding_comment,
     line_from_hint,
     normalize_work_item,
@@ -202,3 +203,81 @@ def test_get_work_items_empty_ids_skips_request():
     client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
     # Should not raise even though _request would fail without a network.
     assert client.get_work_items([]) == []
+
+
+# --- Alignment summary comment ----------------------------------------------
+
+def test_format_alignment_comment_has_verdict_table_and_escapes_pipes():
+    wi = WorkItem(id=1234, type="User Story", state="Active", title="Add export")
+    result = {
+        "verdict": "Partial",
+        "confidence": "High",
+        "summary": "Mostly there.",
+        "criteria": [
+            {"criterion": "Button | downloads CSV", "status": "Met"},
+            {"criterion": "Empty list message", "status": "Not met"},
+            {"criterion": "French i18n", "status": "Unverifiable"},
+        ],
+    }
+    md = format_alignment_comment(wi, result)
+    assert "Requirement Alignment" in md
+    assert "Alignment: Partial" in md
+    assert "| Criterion | Status |" in md
+    assert "Button \\| downloads CSV" in md          # pipe escaped for the table
+    assert "1/2 checkable criteria met." in md       # Unverifiable excluded
+
+
+def test_format_alignment_comment_low_confidence_note():
+    wi = WorkItem(id=1, type="Epic", state="New", title="Big thing")
+    md = format_alignment_comment(wi, {"verdict": "Partial", "confidence": "Low", "criteria": []})
+    assert "_(low confidence)_" in md
+
+
+def test_upsert_alignment_comment_updates_existing(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    monkeypatch.setattr(client, "_find_alignment_thread", lambda pr, marker: (55, 99))
+    calls = []
+    monkeypatch.setattr(
+        client, "_request",
+        lambda method, url, body=None, **k: (calls.append((method, url)), {"id": 1})[1],
+    )
+    client.upsert_alignment_comment(7, 1234, "hi")
+    assert calls[-1][0] == "PATCH"
+    assert "/threads/55/comments/99" in calls[-1][1]
+
+
+def test_upsert_alignment_comment_creates_when_absent(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    monkeypatch.setattr(client, "_find_alignment_thread", lambda pr, marker: None)
+    calls = []
+
+    def fake(method, url, body=None, **k):
+        calls.append((method, url, body))
+        return {"id": 1}
+
+    monkeypatch.setattr(client, "_request", fake)
+    client.upsert_alignment_comment(7, 1234, "hi")
+    method, url, body = calls[-1]
+    assert method == "POST"
+    # New thread is tagged with the work-item marker so the next run finds it.
+    prop = body["properties"][azure_devops.ALIGNMENT_THREAD_PROPERTY_KEY]
+    assert prop["$value"] == "1234"
+
+
+def test_find_alignment_thread_matches_marker(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    threads = {
+        "value": [
+            {"id": 10, "comments": [{"id": 1}], "properties": {}},
+            {
+                "id": 20,
+                "comments": [{"id": 2}],
+                "properties": {
+                    azure_devops.ALIGNMENT_THREAD_PROPERTY_KEY: {"$value": "1234"}
+                },
+            },
+        ]
+    }
+    monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
+    assert client._find_alignment_thread(7, "1234") == (20, 2)
+    assert client._find_alignment_thread(7, "9999") is None
