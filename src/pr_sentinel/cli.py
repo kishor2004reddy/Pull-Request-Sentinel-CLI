@@ -14,10 +14,12 @@ from rich.table import Table
 from pr_sentinel import cache, orchestrator, report_generator, router, runstats, ui
 from pr_sentinel.diff import chunker, diff_parser, git_diff
 from pr_sentinel.agents.summary_agent import SummaryAgent
+from pr_sentinel.agents.alignment_agent import AlignmentAgent
 from pr_sentinel.agents import AGENT_REGISTRY
 from pr_sentinel import push_server
 from pr_sentinel.integrations import azure_devops
 from pr_sentinel.config import (
+    ALIGNMENT_REPORT_JSON_FILENAME,
     AZURE_PAT_ENV_VARS,
     DEFAULT_AGENTS,
     DEFAULT_BASE_BRANCH,
@@ -752,6 +754,262 @@ def push_azure(
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+@main.command(name="review-alignment")
+@click.option("--pr", "pr_id", type=int, default=None, help="Azure DevOps pull request ID whose linked work items are reviewed.")
+@click.option(
+    "--work-item",
+    "work_item_id",
+    type=int,
+    default=None,
+    help="Review a specific work item ID directly, instead of the ones linked to a PR.",
+)
+@click.option("--base", default=DEFAULT_BASE_BRANCH, show_default=True, help="Base branch to diff against.")
+@click.option(
+    "--head",
+    default=DEFAULT_HEAD_REF,
+    show_default=True,
+    help="Source branch/ref to review. Defaults to HEAD (currently checked-out branch).",
+)
+@click.option(
+    "--fetch",
+    "do_fetch",
+    is_flag=True,
+    default=DEFAULT_FETCH,
+    help=(
+        "Fetch from the named remote before diffing so the review matches what "
+        "Azure DevOps shows for the PR. Rewrites base → {remote}/{base} and "
+        "head → {remote}/{current_branch}."
+    ),
+)
+@click.option("--org", default=None, help="Azure DevOps organization (overrides remote detection).")
+@click.option("--project", default=None, help="Azure DevOps project (overrides remote detection).")
+@click.option("--repo", default=None, help="Azure DevOps repository (overrides remote detection).")
+@click.option(
+    "--remote",
+    default=DEFAULT_REMOTE,
+    show_default=True,
+    help=(
+        "Git remote used to detect org/project/repo and (with --fetch) to fetch from. "
+        "Use when your Azure DevOps remote is not named 'origin'. "
+        f"Default controlled by DEFAULT_REMOTE in config.py (currently {DEFAULT_REMOTE!r})."
+    ),
+)
+@click.option(
+    "--repo-dir",
+    "repo_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Repository to diff and whose remote is parsed for org/project/repo. Defaults to cwd.",
+)
+@click.option(
+    "--out",
+    "out_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=DEFAULT_OUT_DIR,
+    show_default=True,
+    help="Output directory for the alignment report.",
+)
+@click.option(
+    "--provider",
+    type=click.Choice(sorted(VALID_PROVIDERS)),
+    default=DEFAULT_PROVIDER,
+    show_default=True,
+    help="AI CLI to run the alignment agent through.",
+)
+@click.option("--model", default=None, help="Model forwarded to the selected provider.")
+@click.option(
+    "--timeout",
+    type=click.IntRange(min=1),
+    default=DEFAULT_TIMEOUT,
+    show_default=True,
+    help="Per-call timeout in seconds for the provider subprocess.",
+)
+@click.option("--no-cache", is_flag=True, default=False, help="Bypass the response cache for this run.")
+def review_alignment(
+    pr_id: int | None,
+    work_item_id: int | None,
+    base: str,
+    head: str,
+    do_fetch: bool,
+    org: str | None,
+    project: str | None,
+    repo: str | None,
+    remote: str,
+    repo_dir: Path | None,
+    out_dir: Path,
+    provider: str,
+    model: str | None,
+    timeout: int,
+    no_cache: bool,
+) -> None:
+    """Review whether a PR's code satisfies its linked Azure DevOps work item.
+
+    Fetches the work item(s) linked to --pr (or the explicit --work-item),
+    diffs --base...--head, and asks the Alignment Agent whether the change
+    satisfies each acceptance criterion. Writes an alignment report whose
+    `findings` are push-azure compatible (post the gaps with
+    `push-azure --report reports/alignment-report.json`).
+    """
+    if not pr_id and not work_item_id:
+        raise click.UsageError("Pass --pr <id> or --work-item <id>.")
+
+    model = model or default_model_for(provider)
+    use_cache = not no_cache
+
+    pat = next((os.environ[v] for v in AZURE_PAT_ENV_VARS if os.environ.get(v)), None)
+    if not pat:
+        raise click.UsageError(
+            "No Azure DevOps PAT found. Set "
+            f"{' or '.join(AZURE_PAT_ENV_VARS)} (Work Items: read scope) and retry."
+        )
+
+    if org and project and repo:
+        org_, project_, repo_ = org, project, repo
+    else:
+        url = git_diff.get_remote_url(remote=remote, cwd=repo_dir)
+        if not url:
+            raise click.UsageError(
+                f"No git '{remote}' remote found to detect the repository. "
+                "Pass --org, --project and --repo explicitly, or use --remote to name the correct remote."
+            )
+        try:
+            d_org, d_proj, d_repo = azure_devops.parse_remote(url)
+        except azure_devops.AzureDevOpsError as e:
+            raise click.UsageError(str(e))
+        org_, project_, repo_ = org or d_org, project or d_proj, repo or d_repo
+
+    client = azure_devops.AzureDevOpsClient(org=org_, project=project_, repo=repo_, pat=pat)
+
+    try:
+        ids = [work_item_id] if work_item_id else client.get_pr_work_items(pr_id)
+        work_items = client.get_work_items(ids)
+    except azure_devops.AzureDevOpsError as e:
+        raise click.UsageError(str(e))
+
+    if not work_items:
+        console.print(
+            f"[yellow]No linked work items found for PR #{pr_id}.[/]"
+            if pr_id
+            else f"[yellow]Work item {work_item_id} not found.[/]"
+        )
+        return
+
+    # Build the diff (mirrors `review`: optional fetch, then base...head).
+    if do_fetch:
+        prefix = f"{remote}/"
+        base_branch = base[len(prefix):] if base.startswith(prefix) else base
+        if head == "HEAD":
+            current = git_diff.get_current_branch(cwd=repo_dir).strip()
+            head_branch = current or "HEAD"
+        else:
+            head_branch = head[len(prefix):] if head.startswith(prefix) else head
+        console.print(f"[dim]Fetching {base_branch}, {head_branch} from {remote}…[/dim]")
+        git_diff.fetch_remote(remote=remote, refs=[base_branch, head_branch], cwd=repo_dir)
+        base = f"{prefix}{base_branch}"
+        head = f"{prefix}{head_branch}"
+
+    raw_diff = git_diff.get_branch_diff(base, head=head, cwd=repo_dir)
+    files = diff_parser.parse(raw_diff)
+    if not files:
+        console.print("[yellow]No reviewable files in the diff — nothing to align against.[/]")
+        return
+
+    diff_block = chunker.format_diff_block(files)
+    # Holistic judgment needs the whole diff in one call; if it exceeds the chunk
+    # budget we truncate (with a visible note) rather than silently splitting and
+    # fracturing the verdict.
+    truncated = len(diff_block) > DEFAULT_CHUNK_BUDGET
+    if truncated:
+        diff_block = (
+            diff_block[:DEFAULT_CHUNK_BUDGET]
+            + "\n\n===== DIFF TRUNCATED (exceeded chunk budget) ====="
+        )
+        console.print(
+            f"[yellow]Diff is large ({len(raw_diff):,} chars) — truncated to "
+            f"{DEFAULT_CHUNK_BUDGET:,} chars for the alignment check. "
+            "The verdict is partial.[/]"
+        )
+
+    cache.reset_stats()
+    runstats.reset()
+    _t_start = time.perf_counter()
+
+    agent = AlignmentAgent()
+    alignment_sections: list[dict] = []
+    all_findings: list[dict] = []
+    any_failed = False
+
+    console.print()
+    for wi in work_items:
+        with console.status(f"[dim]Alignment Agent: reviewing #{wi.id} {wi.title}…[/]"):
+            result = agent.run(
+                work_item=wi,
+                diff_block=diff_block,
+                model=model,
+                timeout=timeout,
+                use_cache=use_cache,
+                provider=provider,
+            )
+        console.print(ui.alignment_panel(wi, result))
+        if result.get("failed"):
+            any_failed = True
+        all_findings.extend(result.get("findings", []))
+        alignment_sections.append(
+            {
+                "workItem": {
+                    "id": wi.id,
+                    "type": wi.type,
+                    "state": wi.state,
+                    "title": wi.title,
+                },
+                "verdict": result.get("verdict"),
+                "confidence": result.get("confidence"),
+                "summary": result.get("summary"),
+                "criteria": result.get("criteria", []),
+                "truncatedDiff": truncated,
+            }
+        )
+
+    # Reuse build_report for the standard finding envelope (risk level, stable
+    # finding ids, push-azure shape), then attach the alignment-specific sections.
+    try:
+        repo_root = git_diff.get_repo_root(cwd=repo_dir)
+    except Exception:
+        repo_root = None
+    agent_result = {"agent": AlignmentAgent.display_name, "findings": all_findings}
+    # Only mark the agent failed when every run failed *and* produced nothing —
+    # if some work items yielded gaps, the report is still useful.
+    if any_failed and not all_findings:
+        agent_result["failed"] = True
+        agent_result["error"] = "alignment run failed"
+    report = report_generator.build_report(
+        agent_results=[agent_result],
+        base_branch=base,
+        source=f"alignment:PR#{pr_id}" if pr_id else f"alignment:WI#{work_item_id}",
+        repo_root=repo_root,
+    )
+    report["alignment"] = alignment_sections
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = out_dir / ALIGNMENT_REPORT_JSON_FILENAME
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    console.print(
+        ui.runstats_panel(
+            runstats.summary(),
+            time.perf_counter() - _t_start,
+            cache.stats(),
+            cache_enabled=use_cache,
+        )
+    )
+    console.print(ui.reports_panel([report_path]))
+    if all_findings:
+        console.print(
+            f"[dim]Post the {len(all_findings)} gap(s) as PR comments with:[/] "
+            f"[cyan]pr-sentinel push-azure --pr {pr_id or '<id>'} --report {report_path}[/]"
+        )
 
 
 @main.command(name="agents")

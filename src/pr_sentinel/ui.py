@@ -188,6 +188,63 @@ def verdict_panel(report: dict, agent_results: list[dict]) -> Panel:
     )
 
 
+_ALIGNMENT_VERDICT_STYLE = {
+    "Satisfied": "green",
+    "Partial": "yellow",
+    "Not satisfied": "red",
+    "Unknown": "red",
+}
+_CRITERION_ICON = {
+    "Met": "[green]✓[/]",
+    "Partial": "[yellow]~[/]",
+    "Not met": "[red]✗[/]",
+    "Unverifiable": "[dim]?[/]",
+}
+
+
+def alignment_panel(work_item, result: dict) -> Panel:
+    """Render one work item's alignment verdict + per-criterion checklist.
+
+    `work_item` is an azure_devops.WorkItem; `result` is AlignmentAgent.run()'s
+    output (verdict/confidence/summary/criteria/findings).
+    """
+    verdict = result.get("verdict", "Unknown")
+    style = _ALIGNMENT_VERDICT_STYLE.get(verdict, "white")
+    confidence = result.get("confidence", "Low")
+
+    header = (
+        f"[bold]#{work_item.id}[/] [cyan]{work_item.type or 'Work Item'}[/] — "
+        f"{work_item.title}"
+    )
+    conf_note = "  [dim](low confidence)[/]" if confidence == "Low" else ""
+    lines = [
+        header,
+        "",
+        f"[bold {style}]Alignment: {verdict}[/]{conf_note}",
+    ]
+    summary = str(result.get("summary", "")).strip()
+    if summary:
+        lines += ["", summary]
+
+    criteria = result.get("criteria") or []
+    if criteria:
+        lines += ["", "[bold]Criteria[/]"]
+        for c in criteria:
+            icon = _CRITERION_ICON.get(c.get("status", ""), "[dim]?[/]")
+            text = c.get("criterion", "") or "(unspecified)"
+            evidence = str(c.get("evidence", "")).strip()
+            lines.append(f"  {icon} {text}")
+            if evidence:
+                lines.append(f"      [dim]{evidence}[/]")
+
+    return Panel(
+        "\n".join(lines),
+        title="[bold]Requirement Alignment[/]",
+        border_style=style,
+        padding=(1, 2),
+    )
+
+
 def reports_panel(written: list[Path]) -> Panel:
     body = "\n".join(f"[dim]{p}[/]" for p in written)
     return Panel(

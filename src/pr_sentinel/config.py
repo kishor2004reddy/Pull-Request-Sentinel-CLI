@@ -61,6 +61,12 @@ VALID_AGENTS = set(DEFAULT_AGENTS)
 VALID_SEVERITIES = {"Low", "Medium", "High"}
 SEVERITY_ORDER = {"High": 0, "Medium": 1, "Low": 2}
 
+# --- Alignment review (work-item requirement coverage) ----------------------
+ALIGNMENT_AGENT_NAME = "Alignment Agent"
+ALIGNMENT_VERDICTS = {"Satisfied", "Partial", "Not satisfied"}
+ALIGNMENT_CRITERION_STATUSES = {"Met", "Partial", "Not met", "Unverifiable"}
+ALIGNMENT_CONFIDENCES = {"High", "Low"}
+
 # --- Report output ----------------------------------------------------------
 # "both" stays json+markdown for backward compatibility; "all" adds html.
 VALID_FORMATS = {"json", "markdown", "html", "both", "all"}
@@ -68,6 +74,7 @@ DEFAULT_OUT_DIR = Path("./reports")
 REPORT_JSON_FILENAME = "report.json"
 REPORT_MARKDOWN_FILENAME = "review-report.md"
 REPORT_HTML_FILENAME = "review-report.html"
+ALIGNMENT_REPORT_JSON_FILENAME = "alignment-report.json"
 SOURCE_DIFF_FILENAME = "source.diff"
 IGNORE_FILE_NAME = ".prsentinelignore"
 
@@ -109,6 +116,20 @@ NOISE_PATTERNS = [
 # --- Azure DevOps integration -----------------------------------------------
 # REST API version used for all Azure DevOps calls.
 AZURE_API_VERSION = "7.1"
+# Work item fields fetched for the alignment review. A superset across work item
+# types — different types carry the requirement in different fields (a User Story
+# uses Description + AcceptanceCriteria; a Bug uses ReproSteps). We request all
+# and use whichever are populated. Reading these requires the PAT to additionally
+# carry the Work Items (read) scope.
+AZURE_WORK_ITEM_FIELDS = (
+    "System.Title",
+    "System.Description",
+    "Microsoft.VSTS.Common.AcceptanceCriteria",
+    "Microsoft.VSTS.TCM.ReproSteps",
+    "System.WorkItemType",
+    "System.State",
+    "System.Tags",
+)
 # Environment variables searched (in order) for the Personal Access Token used
 # to authenticate the push. SYSTEM_ACCESSTOKEN is the token Azure Pipelines
 # exposes to a job, so the same command works locally and in CI.

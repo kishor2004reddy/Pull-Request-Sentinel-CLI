@@ -4,8 +4,11 @@ from pr_sentinel.integrations import azure_devops
 from pr_sentinel.integrations.azure_devops import (
     AzureDevOpsClient,
     AzureDevOpsError,
+    WorkItem,
+    _html_to_text,
     format_finding_comment,
     line_from_hint,
+    normalize_work_item,
     parse_remote,
 )
 
@@ -116,3 +119,86 @@ def test_format_finding_comment_omits_blank_fields():
     md = format_finding_comment(finding)
     assert "Reasoning" not in md
     assert "Recommendation" not in md
+
+
+# --- Work item fetching / normalization -------------------------------------
+
+def test_html_to_text_strips_tags_and_keeps_block_breaks():
+    html = "<div>First line.</div><p>Second &amp; third.</p><br>Fourth"
+    text = _html_to_text(html)
+    assert text == "First line.\nSecond & third.\nFourth"
+
+
+def test_html_to_text_empty():
+    assert _html_to_text(None) == ""
+    assert _html_to_text("") == ""
+
+
+def test_normalize_work_item_splits_criteria_and_strips_markers():
+    raw = {
+        "id": 99,
+        "fields": {
+            "System.Title": "Add export",
+            "System.WorkItemType": "User Story",
+            "System.State": "Active",
+            "System.Description": "<p>Export orders.</p>",
+            "Microsoft.VSTS.Common.AcceptanceCriteria":
+                "<ul><li>Button works</li><li>CSV has headers</li></ul>",
+        },
+    }
+    wi = normalize_work_item(raw)
+    assert isinstance(wi, WorkItem)
+    assert wi.id == 99
+    assert wi.type == "User Story"
+    assert wi.title == "Add export"
+    assert wi.description == "Export orders."
+    assert wi.criteria == ["Button works", "CSV has headers"]
+
+
+def test_normalize_work_item_bug_carries_repro_steps():
+    raw = {
+        "id": 7,
+        "fields": {
+            "System.Title": "Crash on save",
+            "System.WorkItemType": "Bug",
+            "Microsoft.VSTS.TCM.ReproSteps": "<div>Open X, click Save, crash.</div>",
+        },
+    }
+    wi = normalize_work_item(raw)
+    assert wi.repro_steps == "Open X, click Save, crash."
+    assert wi.criteria == []
+
+
+def test_pr_work_items_and_work_items_urls_well_formed():
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    assert "/pullRequests/42/workitems" in client._pr_work_items_url(42)
+    wi_url = client._work_items_url([1, 2], ("System.Title", "System.State"))
+    assert "/_apis/wit/workitems?ids=1,2" in wi_url
+    assert "fields=System.Title%2CSystem.State" in wi_url
+
+
+def test_get_pr_work_items_parses_ids(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    monkeypatch.setattr(
+        client, "_request",
+        lambda *a, **k: {"value": [{"id": "10"}, {"id": "11"}, {"url": "no-id"}]},
+    )
+    assert client.get_pr_work_items(5) == [10, 11]
+
+
+def test_get_work_items_normalizes(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    monkeypatch.setattr(
+        client, "_request",
+        lambda *a, **k: {"value": [
+            {"id": 1, "fields": {"System.Title": "T", "System.WorkItemType": "Bug"}}
+        ]},
+    )
+    items = client.get_work_items([1])
+    assert len(items) == 1 and items[0].title == "T" and items[0].type == "Bug"
+
+
+def test_get_work_items_empty_ids_skips_request():
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    # Should not raise even though _request would fail without a network.
+    assert client.get_work_items([]) == []

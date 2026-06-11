@@ -13,14 +13,15 @@ Authentication is a Personal Access Token (PAT) sent as HTTP Basic
 (``base64(":" + pat)``). No token is ever written to disk or rendered into HTML.
 """
 import base64
+import html
 import json
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote
 
-from pr_sentinel.config import AZURE_API_VERSION
+from pr_sentinel.config import AZURE_API_VERSION, AZURE_WORK_ITEM_FIELDS
 
 # Marker stored on every thread PR Sentinel creates, so a re-push can detect
 # findings that were already posted and skip them. Azure DevOps thread
@@ -97,7 +98,29 @@ class AzureDevOpsClient:
             f"/pullRequests/{pr_id}/threads?api-version={self.api_version}"
         )
 
-    def _request(self, method: str, url: str, body: dict | None = None) -> dict:
+    def _pr_work_items_url(self, pr_id: int) -> str:
+        return (
+            f"{self.base_url}/{quote(self.org)}/{quote(self.project)}"
+            f"/_apis/git/repositories/{quote(self.repo)}"
+            f"/pullRequests/{pr_id}/workitems?api-version={self.api_version}"
+        )
+
+    def _work_items_url(self, ids: list[int], fields: tuple[str, ...]) -> str:
+        ids_csv = ",".join(str(i) for i in ids)
+        fields_csv = quote(",".join(fields))
+        return (
+            f"{self.base_url}/{quote(self.org)}/{quote(self.project)}"
+            f"/_apis/wit/workitems?ids={ids_csv}&fields={fields_csv}"
+            f"&api-version={self.api_version}"
+        )
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        body: dict | None = None,
+        scope_hint: str = "Code (read & write)",
+    ) -> dict:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Authorization", self._auth_header())
@@ -112,8 +135,8 @@ class AzureDevOpsClient:
             if e.code in (401, 203):
                 raise AzureDevOpsError(
                     "Azure DevOps rejected the credentials (HTTP "
-                    f"{e.code}). Check the PAT and that it has Code (read & "
-                    "write) scope."
+                    f"{e.code}). Check the PAT and that it has {scope_hint} "
+                    "scope."
                 ) from e
             raise AzureDevOpsError(
                 f"Azure DevOps {method} failed (HTTP {e.code}): {detail}"
@@ -177,6 +200,120 @@ class AzureDevOpsClient:
                 }
             }
         return self._request("POST", self._threads_url(pr_id), body)
+
+    def get_pr_work_items(self, pr_id: int) -> list[int]:
+        """Return the IDs of the work items linked to a pull request.
+
+        Azure returns ``{"value": [{"id": "123", "url": "..."}]}`` where ``id``
+        is the work item id as a string. Returns an empty list when the PR has
+        no linked work items.
+        """
+        data = self._request(
+            "GET", self._pr_work_items_url(pr_id), scope_hint="Code (read)"
+        )
+        ids: list[int] = []
+        for ref in data.get("value", []):
+            raw_id = ref.get("id")
+            if raw_id is None:
+                continue
+            try:
+                ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                continue
+        return ids
+
+    def get_work_items(
+        self, ids: list[int], fields: tuple[str, ...] = AZURE_WORK_ITEM_FIELDS
+    ) -> list["WorkItem"]:
+        """Fetch and normalize the given work items.
+
+        Reading work items needs the Work Items (read) scope on the PAT, which
+        is *separate* from the Code scope the rest of the integration uses — the
+        401 message names it so the user knows what to add. Returns one
+        :class:`WorkItem` per id, preserving input order.
+        """
+        if not ids:
+            return []
+        data = self._request(
+            "GET",
+            self._work_items_url(ids, fields),
+            scope_hint="Work Items (read)",
+        )
+        return [normalize_work_item(raw) for raw in data.get("value", [])]
+
+
+@dataclass
+class WorkItem:
+    """A normalized Azure DevOps work item, ready for the alignment review.
+
+    ``criteria`` is the acceptance-criteria text split into individual checkable
+    points (bullets, or Given/When/Then clauses). ``repro_steps`` carries a
+    Bug's reproduction text. Both ``description``/``repro_steps``/``criteria``
+    are plain text — HTML from Azure has already been stripped.
+    """
+
+    id: int
+    type: str
+    state: str
+    title: str
+    description: str = ""
+    criteria: list[str] = field(default_factory=list)
+    repro_steps: str = ""
+
+
+# Block-level tags whose boundaries should become line breaks when we flatten
+# Azure's HTML rich-text fields to plain text.
+_BLOCK_TAG_RE = re.compile(
+    r"</?(?:p|div|br|li|ul|ol|tr|table|h[1-6])[^>]*>", re.IGNORECASE
+)
+_ANY_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _html_to_text(value: str | None) -> str:
+    """Flatten an Azure rich-text (HTML) field to plain text.
+
+    Description, AcceptanceCriteria and ReproSteps come back as HTML. Block
+    tags become newlines so list items and paragraphs stay on separate lines;
+    remaining tags are dropped and entities unescaped. Whitespace within each
+    line is collapsed, blank lines removed.
+    """
+    if not value:
+        return ""
+    text = _BLOCK_TAG_RE.sub("\n", value)
+    text = _ANY_TAG_RE.sub("", text)
+    text = html.unescape(text)
+    lines = [re.sub(r"[ \t ]+", " ", ln).strip() for ln in text.splitlines()]
+    return "\n".join(ln for ln in lines if ln)
+
+
+def _split_criteria(text: str) -> list[str]:
+    """Split acceptance-criteria text into individual checkable points.
+
+    ``_html_to_text`` already put each bullet / paragraph on its own line, so we
+    split on newlines and strip common list markers (-, *, •, '1.', etc.).
+    """
+    items: list[str] = []
+    for line in text.splitlines():
+        cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+        if cleaned:
+            items.append(cleaned)
+    return items
+
+
+def normalize_work_item(raw: dict) -> WorkItem:
+    """Turn a raw Azure work item (``{"id":..., "fields": {...}}``) into a WorkItem."""
+    fields = raw.get("fields", {}) or {}
+    description = _html_to_text(fields.get("System.Description"))
+    criteria_text = _html_to_text(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria"))
+    return WorkItem(
+        id=int(raw.get("id", 0) or 0),
+        type=str(fields.get("System.WorkItemType", "") or "").strip(),
+        state=str(fields.get("System.State", "") or "").strip(),
+        title=str(fields.get("System.Title", "") or "").strip(),
+        description=description,
+        criteria=_split_criteria(criteria_text),
+        repro_steps=_html_to_text(fields.get("Microsoft.VSTS.TCM.ReproSteps")),
+    )
 
 
 def line_from_hint(line_hint) -> int | None:
