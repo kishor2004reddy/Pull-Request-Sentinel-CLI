@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
-from pr_sentinel.config import PUSH_CONFIG_PLACEHOLDER
+from pr_sentinel.config import ALIGNMENT_AGENT_NAME, PUSH_CONFIG_PLACEHOLDER
 from pr_sentinel.report_generator import _agent_summary_data, _merge_verdict
 
 # Editor deep-link scheme. VS Code (and forks via the same handler) open
@@ -179,83 +179,158 @@ def _rich_text_html(text: str, repo_root: str | None = None) -> str:
     return "".join(out)
 
 
-def _render_html(report: dict) -> str:
-    findings = report["findings"]
-    risk = report["riskLevel"]
+def _finding_card_html(
+    f: dict,
+    repo_root: str | None,
+    *,
+    open_: bool = False,
+    show_agent: bool = True,
+    pick_label: str = "Select finding to push",
+) -> str:
+    """One collapsible finding card with a push checkbox.
 
+    Shared by the review findings list, the alignment gaps list, and the
+    combined report so all three stay byte-for-byte consistent. ``open_`` expands
+    the card on load (gaps default to open); ``show_agent`` toggles the agent tag.
+    """
+    severity = f["severity"]
+    sev_fg, sev_bg = _SEV_COLORS[severity]
+    file_html = _file_cell(f["file"], f.get("lineHint"), repo_root)
+    fid = html.escape(str(f.get("id", "")), quote=True)
+    open_attr = " open" if open_ else ""
+    agent_html = (
+        f'<span class="agent-tag">{_e(f.get("agent"))}</span>' if show_agent else ""
+    )
+    parts = [
+        f'<details class="finding" data-sev="{severity}" data-finding-id="{fid}"{open_attr}>',
+        "<summary>"
+        f'<input type="checkbox" class="pick" data-finding-id="{fid}" '
+        f'aria-label="{pick_label}">'
+        f'<span class="badge" style="color:{sev_fg};background:{sev_bg}">{severity}</span>'
+        f'<span class="file">{file_html}</span>'
+        f"{agent_html}"
+        f'<span class="push-mark" data-finding-id="{fid}"></span>'
+        "</summary>",
+        '<div class="finding-body">',
+        f'<p><span class="lbl">Issue.</span> {_rich_text_html(f.get("issue", ""), repo_root)}</p>',
+    ]
+    if str(f.get("reasoning", "")).strip():
+        parts.append(
+            f'<p><span class="lbl">Reasoning.</span> {_rich_text_html(f["reasoning"], repo_root)}</p>'
+        )
+    if str(f.get("recommendation", "")).strip():
+        parts.append(
+            f'<p><span class="lbl">Recommendation.</span> {_rich_text_html(f["recommendation"], repo_root)}</p>'
+        )
+    parts.append("</div></details>")
+    return "".join(parts)
+
+
+def _severity_counts(findings: list[dict]) -> dict[str, int]:
     counts = {"High": 0, "Medium": 0, "Low": 0}
     for f in findings:
         counts[f["severity"]] = counts.get(f["severity"], 0) + 1
-    raw_count = report.get("rawFindingCount")
+    return counts
 
-    fg, bg, accent = _RISK_COLORS.get(risk, _RISK_COLORS["Unknown"])
+
+def _chips_html(report: dict) -> str:
+    """The always-visible summary strip under the top bar (counts + coverage)."""
+    findings = report["findings"]
+    counts = _severity_counts(findings)
+    sections = report.get("alignment") or []
     coverage_ok = report.get("coverageComplete", True)
-    repo_root = report.get("repoRoot")
+    chips = [f'<span class="chip"><b>{len(findings)}</b> findings</span>']
+    if counts["High"]:
+        chips.append(f'<span class="chip hi"><b>{counts["High"]}</b> High</span>')
+    if counts["Medium"]:
+        chips.append(f'<span class="chip me"><b>{counts["Medium"]}</b> Medium</span>')
+    if counts["Low"]:
+        chips.append(f'<span class="chip lo"><b>{counts["Low"]}</b> Low</span>')
+    if sections:
+        chips.append(f'<span class="chip"><b>{len(sections)}</b> work item(s)</span>')
+    chips.append(
+        '<span class="chip ok">full coverage</span>'
+        if coverage_ok
+        else '<span class="chip warn">⚠ partial coverage</span>'
+    )
+    return '<div class="chips">' + "".join(chips) + "</div>"
 
-    p: list[str] = []
-    p.append("<!DOCTYPE html>")
-    p.append('<html lang="en"><head>')
-    p.append('<meta charset="utf-8">')
-    p.append('<meta name="viewport" content="width=device-width, initial-scale=1">')
-    p.append(f"<title>PR Sentinel Review — {_e(risk)} risk</title>")
-    p.append(f"<style>{_HTML_STYLE}</style>")
-    # The push server replaces this placeholder with a <script> that defines
-    # window.PRS_PUSH (endpoint + nonce). Left inert in the on-disk report.
-    p.append(PUSH_CONFIG_PLACEHOLDER)
-    p.append("</head><body>")
-    p.append('<main class="wrap">')
 
-    # Header
-    p.append('<header class="hdr">')
-    p.append('<div class="hdr-title">🛡️ PR Sentinel <span class="hdr-sub">Review Report</span></div>')
-    meta = [
-        f"base <code>{_e(report['baseBranch'])}</code>",
-        f"source <code>{_e(report['source'])}</code>",
-        f"{len(report['agentsExecuted'])} agent(s)",
-        _e(report["reviewedAt"]),
-    ]
-    p.append('<div class="hdr-meta">' + " · ".join(meta) + "</div>")
-    p.append("</header>")
-
-    # Risk banner
-    p.append(
-        f'<section class="banner" style="color:{fg};background:{bg};border-left:6px solid {accent}">'
-        f'<span class="banner-risk">Risk: {_e(risk)}</span>'
-        f'<span class="banner-summary">{_e(report["summary"])}</span>'
-        f"</section>"
+def _pr_web_url(pr: dict) -> str:
+    """Azure DevOps web URL for a PR, or '' when org/project/repo are unknown."""
+    org, project, repo, pid = (
+        pr.get("org"), pr.get("project"), pr.get("repo"), pr.get("id")
+    )
+    if not (org and project and repo and pid):
+        return ""
+    return (
+        f"https://dev.azure.com/{quote(str(org))}/{quote(str(project))}"
+        f"/_git/{quote(str(repo))}/pullrequest/{pid}"
     )
 
-    # Stat cards
-    cov_label = "Complete" if coverage_ok else "Incomplete"
-    cov_class = "ok" if coverage_ok else "warn"
-    cards = [
-        ("Findings", str(len(findings)), ""),
-        ("High", str(counts["High"]), "sev-high"),
-        ("Medium", str(counts["Medium"]), "sev-medium"),
-        ("Low", str(counts["Low"]), "sev-low"),
-        ("Coverage", cov_label, cov_class),
-    ]
-    p.append('<section class="cards">')
-    for label, value, cls in cards:
-        p.append(
-            f'<div class="card {cls}"><div class="card-val">{_e(value)}</div>'
-            f'<div class="card-lbl">{_e(label)}</div></div>'
-        )
-    p.append("</section>")
-    if raw_count is not None and raw_count != len(findings):
+
+def _pr_section_html(pr: dict) -> str:
+    """The 'Pull Request' card in Overview: PR #, repo, base and source branch."""
+    repo_full = "/".join(
+        str(pr.get(k, "")) for k in ("org", "project", "repo") if pr.get(k)
+    )
+    url = _pr_web_url(pr)
+    pid = f"#{_e(pr.get('id'))}"
+    pid_html = (
+        f'<a class="file-link" href="{html.escape(url, quote=True)}">{pid}</a>'
+        if url else pid
+    )
+    if str(pr.get("title", "")).strip():
+        pid_html += f' <span class="muted">· {_e(pr.get("title"))}</span>'
+
+    def row(k: str, v: str) -> str:
+        return f'<div class="kv-k">{k}</div><div class="kv-v">{v}</div>'
+
+    return (
+        '<div class="block"><h2>Pull Request</h2><div class="kv">'
+        + row("PR", pid_html)
+        + row("Repository", f"<code>{_e(repo_full)}</code>")
+        + row("Base branch", f"<code>{_e(pr.get('baseBranch'))}</code>")
+        + row("Source branch", f"<code>{_e(pr.get('sourceBranch'))}</code>")
+        + "</div></div>"
+    )
+
+
+def _overview_panel_html(report: dict) -> str:
+    """Risk hero + PR context + merge verdict + per-agent table. Landing tab."""
+    risk = report["riskLevel"]
+    raw_count = report.get("rawFindingCount")
+    p: list[str] = []
+
+    p.append(
+        '<p class="meta">'
+        f"base <code>{_e(report['baseBranch'])}</code> · "
+        f"source <code>{_e(report['source'])}</code> · "
+        f"{len(report['agentsExecuted'])} agent(s) · {_e(report['reviewedAt'])}"
+        "</p>"
+    )
+
+    p.append(
+        f'<div class="hero risk-{risk}">'
+        f'<div class="hero-risk">Risk: {_e(risk)}</div>'
+        f'<div class="hero-summary">{_e(report["summary"])}</div>'
+        "</div>"
+    )
+
+    if report.get("pr"):
+        p.append(_pr_section_html(report["pr"]))
+    if raw_count is not None and raw_count != len(report["findings"]):
         p.append(
             f'<p class="note">Cleaned from {raw_count} raw finding(s) by the summary pass.</p>'
         )
 
-    # Merge verdict
-    p.append('<section class="block">')
+    p.append('<div class="block">')
     p.append("<h2>Merge Verdict</h2>")
-    p.append(f'<div class="verdict" style="border-left:4px solid {accent}">{_multiline_html(_merge_verdict(report))}</div>')
-    p.append("</section>")
+    p.append(f'<div class="verdict">{_multiline_html(_merge_verdict(report))}</div>')
+    p.append("</div>")
 
-    # Findings by agent
     rows, totals = _agent_summary_data(report)
-    p.append('<section class="block">')
+    p.append('<div class="block">')
     p.append("<h2>Findings by Agent</h2>")
     p.append('<table class="agents"><thead><tr>'
              "<th>Agent</th><th>Status</th><th>Total</th>"
@@ -279,64 +354,130 @@ def _render_html(report: dict) -> str:
         f'<td>{totals["high"]}</td><td>{totals["medium"]}</td><td>{totals["low"]}</td></tr>'
     )
     p.append("</tbody></table>")
-    p.append("</section>")
-
-    # All findings (filterable, collapsible)
-    p.append('<section class="block">')
-    p.append('<div class="findings-head"><h2>Findings</h2>')
-    if findings:
-        p.append('<div class="filters" role="group" aria-label="Filter by severity">')
-        p.append('<button class="filter active" data-sev="all">All</button>')
-        for sev in ("High", "Medium", "Low"):
-            if counts[sev]:
-                p.append(f'<button class="filter" data-sev="{sev}">{sev} ({counts[sev]})</button>')
-        p.append("</div>")
     p.append("</div>")
+    return "".join(p)
 
-    # Push toolbar — select findings via the checkboxes below and push the
-    # selection to an Azure DevOps PR. Only functional when this page is served
-    # by `pr-sentinel push-azure` (which injects PRS_PUSH); otherwise the JS
-    # disables the button and shows how to enable it.
-    if findings:
-        p.append('<div class="push-bar" id="push-bar">')
-        p.append('<label class="push-all"><input type="checkbox" id="push-select-all"> Select all</label>')
-        p.append('<button class="push-btn" id="push-btn" type="button" disabled>Push selected to PR</button>')
-        p.append('<span class="push-status" id="push-status"></span>')
-        p.append("</div>")
 
+def _findings_panel_html(
+    findings: list[dict], repo_root: str | None, *, title: str, empty: str
+) -> str:
+    """A list of finding cards, sorted High→Low, with an empty state."""
+    p = [f'<h2 class="panel-title">{title}</h2>']
     if not findings:
-        p.append('<p class="empty">No findings. 🎉</p>')
+        p.append(f'<p class="empty">{empty}</p>')
     else:
         for severity in ("High", "Medium", "Low"):
             for f in (x for x in findings if x["severity"] == severity):
-                sev_fg, sev_bg = _SEV_COLORS[severity]
-                file_html = _file_cell(f["file"], f.get("lineHint"), repo_root)
-                fid = html.escape(str(f.get("id", "")), quote=True)
-                p.append(f'<details class="finding" data-sev="{severity}" data-finding-id="{fid}">')
+                p.append(_finding_card_html(f, repo_root))
+    return "".join(p)
+
+
+def _gaps_panel_html(findings: list[dict], repo_root: str | None) -> str:
+    p = [f'<h2 class="panel-title">Gaps ({len(findings)})</h2>']
+    if not findings:
+        p.append('<p class="empty">No gaps — every checkable criterion is met. 🎉</p>')
+    else:
+        for severity in ("High", "Medium", "Low"):
+            for f in (x for x in findings if x["severity"] == severity):
                 p.append(
-                    "<summary>"
-                    f'<input type="checkbox" class="pick" data-finding-id="{fid}" '
-                    'aria-label="Select finding to push">'
-                    f'<span class="badge" style="color:{sev_fg};background:{sev_bg}">{severity}</span>'
-                    f'<span class="file">{file_html}</span>'
-                    f'<span class="agent-tag">{_e(f.get("agent"))}</span>'
-                    f'<span class="push-mark" data-finding-id="{fid}"></span>'
-                    "</summary>"
+                    _finding_card_html(
+                        f, repo_root, open_=True, show_agent=False,
+                        pick_label="Select gap to push",
+                    )
                 )
-                p.append('<div class="finding-body">')
-                p.append(f'<p><span class="lbl">Issue.</span> {_rich_text_html(f.get("issue", ""), repo_root)}</p>')
-                if str(f.get("reasoning", "")).strip():
-                    p.append(f'<p><span class="lbl">Reasoning.</span> {_rich_text_html(f["reasoning"], repo_root)}</p>')
-                if str(f.get("recommendation", "")).strip():
-                    p.append(f'<p><span class="lbl">Recommendation.</span> {_rich_text_html(f["recommendation"], repo_root)}</p>')
-                p.append("</div></details>")
-    p.append("</section>")
+    return "".join(p)
+
+
+def _alignment_panel_html(sections: list[dict], repo_root: str | None) -> str:
+    p = ['<h2 class="panel-title">Requirement Alignment</h2>']
+    if not sections:
+        p.append('<p class="empty">No work items reviewed.</p>')
+    for s in sections:
+        p.append(_work_item_block_html(s, repo_root))
+    return "".join(p)
+
+
+def _page_shell(report: dict, *, subtitle: str, tabs: list[dict]) -> str:
+    """Assemble the full page: sticky top bar (risk + push action), a summary
+    chip strip, a tab nav, and one panel per tab (first is active).
+
+    Each ``tabs`` entry is ``{"id", "label", "count" (int|None), "html"}``. The
+    push UI lives once in the top bar; ``window.PRS_PUSH`` (injected by the push
+    server) activates it, otherwise it stays inert.
+    """
+    risk = report["riskLevel"]
+    p: list[str] = []
+    p.append("<!DOCTYPE html>")
+    p.append('<html lang="en"><head>')
+    p.append('<meta charset="utf-8">')
+    p.append('<meta name="viewport" content="width=device-width, initial-scale=1">')
+    p.append(f"<title>PR Sentinel — {_e(subtitle)} ({_e(risk)} risk)</title>")
+    p.append(f"<style>{_HTML_STYLE}{_ALIGNMENT_STYLE}</style>")
+    # Replaced by the push server with a <script> defining window.PRS_PUSH.
+    p.append(PUSH_CONFIG_PLACEHOLDER)
+    p.append("</head><body>")
+
+    # Sticky top bar: brand, risk badge, and the one push toolbar.
+    p.append('<header class="topbar"><div class="topbar-inner">')
+    p.append(
+        '<div class="brand">🛡️ PR Sentinel '
+        f'<span class="brand-sub">{_e(subtitle)}</span></div>'
+    )
+    p.append('<div class="topbar-right">')
+    p.append(f'<span class="risk-badge risk-{risk}">{_e(risk)} risk</span>')
+    p.append('<div class="push-area" id="push-bar">')
+    p.append('<label class="select-all"><input type="checkbox" id="push-select-all"> All</label>')
+    p.append('<button class="push-btn" id="push-btn" type="button" disabled>Push selected</button>')
+    p.append("</div>")  # push-area
+    p.append("</div>")  # topbar-right
+    p.append("</div>")  # topbar-inner
+    p.append('<div class="topbar-status"><span class="push-status" id="push-status"></span></div>')
+    p.append("</header>")
+
+    p.append(_chips_html(report))
+
+    # Tab nav
+    p.append('<nav class="tabs" role="tablist">')
+    for i, t in enumerate(tabs):
+        active = " active" if i == 0 else ""
+        count = (
+            f'<span class="tab-count">{t["count"]}</span>'
+            if t.get("count")
+            else ""
+        )
+        p.append(
+            f'<button class="tab{active}" type="button" role="tab" '
+            f'data-tab="{t["id"]}">{_e(t["label"])}{count}</button>'
+        )
+    p.append("</nav>")
+
+    # Panels (first visible, rest hidden)
+    p.append('<main class="wrap">')
+    for i, t in enumerate(tabs):
+        hidden = "" if i == 0 else " hidden"
+        p.append(
+            f'<section class="tabpanel{hidden}" role="tabpanel" '
+            f'data-panel="{t["id"]}">{t["html"]}</section>'
+        )
+    p.append("</main>")
 
     p.append('<footer class="ftr">Generated by PR Sentinel.</footer>')
-    p.append("</main>")
     p.append(f"<script>{_HTML_SCRIPT}</script>")
     p.append("</body></html>")
     return "\n".join(p) + "\n"
+
+
+def _render_html(report: dict) -> str:
+    findings = report["findings"]
+    repo_root = report.get("repoRoot")
+    tabs = [
+        {"id": "overview", "label": "Overview", "count": None,
+         "html": _overview_panel_html(report)},
+        {"id": "code", "label": "Findings", "count": len(findings) or None,
+         "html": _findings_panel_html(
+             findings, repo_root, title="Findings", empty="No findings. 🎉")},
+    ]
+    return _page_shell(report, subtitle="Review Report", tabs=tabs)
 
 
 # Alignment verdict badge palette (text, background, accent), reusing the risk
@@ -373,170 +514,136 @@ def _coverage_bar(counts: dict[str, int], total: int) -> str:
     return f'<div class="cov-bar">{"".join(segs)}</div>'
 
 
+def _work_item_block_html(s: dict, repo_root: str | None) -> str:
+    """One work item's scorecard + traceability matrix, with a push checkbox on
+    the verdict. Shared by the alignment and combined renderers."""
+    wi = s.get("workItem", {})
+    verdict = s.get("verdict") or "Unknown"
+    fg, bg, accent = _VERDICT_COLORS.get(verdict, _VERDICT_COLORS["Unknown"])
+    conf = s.get("confidence") or "Low"
+    conf_note = ' <span class="conf">low confidence</span>' if conf == "Low" else ""
+
+    criteria = s.get("criteria") or []
+    counts = {st: sum(1 for c in criteria if c.get("status") == st) for st in _STATUS_ORDER}
+    total = len(criteria)
+    checkable = total - counts["Unverifiable"]
+    met = counts["Met"]
+
+    # Verdict is pushable as a summary comment; id prefixed so the server
+    # routes it to upsert_alignment_comment (vs create thread for gaps).
+    align_id = html.escape(f"align:{wi.get('id')}", quote=True)
+    p: list[str] = []
+    p.append('<section class="block">')
+    p.append(
+        '<div class="wi-head">'
+        f'<input type="checkbox" class="pick" data-finding-id="{align_id}" '
+        'aria-label="Select verdict to push">'
+        f'<span class="wi-id">#{_e(wi.get("id"))}</span>'
+        f'<span class="wi-type">{_e(wi.get("type") or "Work Item")}</span>'
+        + (f'<span class="wi-state">{_e(wi.get("state"))}</span>' if wi.get("state") else "")
+        + f'<span class="wi-title">{_e(wi.get("title"))}</span>'
+        f'<span class="push-mark" data-finding-id="{align_id}"></span>'
+        "</div>"
+    )
+
+    # Scorecard: verdict badge + coverage bar + legend.
+    p.append('<div class="scorecard">')
+    p.append(
+        f'<span class="verdict-badge" style="color:{fg};background:{bg};'
+        f'border-left:5px solid {accent}">{_e(verdict)}{conf_note}</span>'
+    )
+    if total:
+        cov_label = f"{met}/{checkable} met" if checkable else "no checkable criteria"
+        legend = " · ".join(
+            f'<b>{counts[st]}</b> {st}' for st in _STATUS_ORDER if counts[st]
+        )
+        p.append(
+            '<div class="cov">'
+            + _coverage_bar(counts, total)
+            + f'<div class="cov-legend"><span>Coverage: <b>{cov_label}</b></span>'
+            + (f"<span>{legend}</span>" if legend else "")
+            + "</div></div>"
+        )
+    p.append("</div>")
+
+    if s.get("summary"):
+        p.append(f'<p class="summary-line">{_e(s.get("summary"))}</p>')
+    if s.get("truncatedDiff"):
+        p.append('<p class="note">⚠ Diff was truncated for size — this verdict is partial.</p>')
+
+    # Traceability matrix.
+    if criteria:
+        p.append('<table class="trace"><thead><tr>'
+                 "<th>Status</th><th>Criterion</th><th>Evidence</th>"
+                 "</tr></thead><tbody>")
+        for c in criteria:
+            status = c.get("status", "Unverifiable")
+            icon, cls, _ = _CRITERION_HTML.get(status, ("?", "unverifiable", "cov-seg-unv"))
+            ev = c.get("evidence", "")
+            ev_html = _rich_text_html(ev, repo_root) if str(ev).strip() else "—"
+            p.append(
+                f'<tr class="crit-{cls}">'
+                f'<td class="status"><span class="crit-icon">{icon}</span> {_e(status)}</td>'
+                f'<td>{_e(c.get("criterion"))}</td>'
+                f'<td class="crit-ev">{ev_html}</td>'
+                "</tr>"
+            )
+        p.append("</tbody></table>")
+    else:
+        p.append('<p class="note">No acceptance criteria on this item — judged against title/description.</p>')
+    p.append("</section>")
+    return "".join(p)
+
+
 def _render_alignment_html(report: dict) -> str:
-    """Render the requirement-alignment report: per work item a scorecard +
-    traceability matrix (criterion → status → evidence), then the gap findings.
+    """Render the requirement-alignment report as a tabbed page: Overview, then
+    Alignment (per-work-item scorecard + traceability matrix), then Gaps.
 
     `report` is the dict written by `review-alignment` — a standard report
-    envelope plus an `alignment` list of per-work-item sections. Gaps are
-    read-only here; push them via `push-azure --report alignment-report.json`.
+    envelope plus an `alignment` list of per-work-item sections.
     """
     sections = report.get("alignment", [])
     findings = report.get("findings", [])
     repo_root = report.get("repoRoot")
-
-    p: list[str] = []
-    p.append("<!DOCTYPE html>")
-    p.append('<html lang="en"><head>')
-    p.append('<meta charset="utf-8">')
-    p.append('<meta name="viewport" content="width=device-width, initial-scale=1">')
-    p.append("<title>PR Sentinel — Requirement Alignment</title>")
-    p.append(f"<style>{_HTML_STYLE}{_ALIGNMENT_STYLE}</style>")
-    # The push server replaces this with a <script> defining window.PRS_PUSH;
-    # left inert in the on-disk report so opening it standalone does nothing.
-    p.append(PUSH_CONFIG_PLACEHOLDER)
-    p.append("</head><body>")
-    p.append('<main class="wrap">')
-
-    # Header
-    p.append('<header class="hdr">')
-    p.append('<div class="hdr-title">🛡️ PR Sentinel <span class="hdr-sub">Requirement Alignment</span></div>')
-    meta = [
-        f"base <code>{_e(report['baseBranch'])}</code>",
-        f"source <code>{_e(report['source'])}</code>",
-        f"{len(sections)} work item(s)",
-        _e(report.get("reviewedAt")),
+    tabs = [
+        {"id": "overview", "label": "Overview", "count": None,
+         "html": _overview_panel_html(report)},
+        {"id": "alignment", "label": "Alignment", "count": len(sections) or None,
+         "html": _alignment_panel_html(sections, repo_root)},
+        {"id": "gaps", "label": "Gaps", "count": len(findings) or None,
+         "html": _gaps_panel_html(findings, repo_root)},
     ]
-    p.append('<div class="hdr-meta">' + " · ".join(meta) + "</div>")
-    p.append("</header>")
+    return _page_shell(report, subtitle="Requirement Alignment", tabs=tabs)
 
-    # Push toolbar — tick verdicts and gaps below, then push the selection.
-    # Functional only when served by `pr-sentinel push-azure` (which injects
-    # PRS_PUSH); otherwise the JS disables the button with a hint.
-    p.append('<div class="push-bar" id="push-bar">')
-    p.append('<label class="push-all"><input type="checkbox" id="push-select-all"> Select all</label>')
-    p.append('<button class="push-btn" id="push-btn" type="button" disabled>Push selected to PR</button>')
-    p.append('<span class="push-status" id="push-status"></span>')
-    p.append("</div>")
 
-    if not sections:
-        p.append('<p class="empty">No work items reviewed.</p>')
+def _render_combined_html(report: dict) -> str:
+    """Render code review *and* requirement alignment as one tabbed page.
 
-    for s in sections:
-        wi = s.get("workItem", {})
-        verdict = s.get("verdict") or "Unknown"
-        fg, bg, accent = _VERDICT_COLORS.get(verdict, _VERDICT_COLORS["Unknown"])
-        conf = s.get("confidence") or "Low"
-        conf_note = ' <span class="conf">low confidence</span>' if conf == "Low" else ""
-
-        criteria = s.get("criteria") or []
-        counts = {st: sum(1 for c in criteria if c.get("status") == st) for st in _STATUS_ORDER}
-        total = len(criteria)
-        checkable = total - counts["Unverifiable"]
-        met = counts["Met"]
-
-        # Verdict is pushable as a summary comment; id prefixed so the server
-        # routes it to upsert_alignment_comment (vs create thread for gaps).
-        align_id = html.escape(f"align:{wi.get('id')}", quote=True)
-        p.append('<section class="block">')
-        p.append(
-            '<div class="wi-head">'
-            f'<input type="checkbox" class="pick" data-finding-id="{align_id}" '
-            'aria-label="Select verdict to push">'
-            f'<span class="wi-id">#{_e(wi.get("id"))}</span>'
-            f'<span class="wi-type">{_e(wi.get("type") or "Work Item")}</span>'
-            + (f'<span class="wi-state">{_e(wi.get("state"))}</span>' if wi.get("state") else "")
-            + f'<span class="wi-title">{_e(wi.get("title"))}</span>'
-            f'<span class="push-mark" data-finding-id="{align_id}"></span>'
-            "</div>"
-        )
-
-        # Scorecard: verdict badge + coverage bar + legend.
-        p.append('<div class="scorecard">')
-        p.append(
-            f'<span class="verdict-badge" style="color:{fg};background:{bg};'
-            f'border-left:5px solid {accent}">{_e(verdict)}{conf_note}</span>'
-        )
-        if total:
-            cov_label = f"{met}/{checkable} met" if checkable else "no checkable criteria"
-            legend = " · ".join(
-                f'<b>{counts[st]}</b> {st}' for st in _STATUS_ORDER if counts[st]
-            )
-            p.append(
-                '<div class="cov">'
-                + _coverage_bar(counts, total)
-                + f'<div class="cov-legend"><span>Coverage: <b>{cov_label}</b></span>'
-                + (f"<span>{legend}</span>" if legend else "")
-                + "</div></div>"
-            )
-        p.append("</div>")
-
-        if s.get("summary"):
-            p.append(f'<p class="summary-line">{_e(s.get("summary"))}</p>')
-        if s.get("truncatedDiff"):
-            p.append('<p class="note">⚠ Diff was truncated for size — this verdict is partial.</p>')
-
-        # Traceability matrix.
-        if criteria:
-            p.append('<table class="trace"><thead><tr>'
-                     "<th>Status</th><th>Criterion</th><th>Evidence</th>"
-                     "</tr></thead><tbody>")
-            for c in criteria:
-                status = c.get("status", "Unverifiable")
-                icon, cls, _ = _CRITERION_HTML.get(status, ("?", "unverifiable", "cov-seg-unv"))
-                ev = c.get("evidence", "")
-                ev_html = _rich_text_html(ev, repo_root) if str(ev).strip() else "—"
-                p.append(
-                    f'<tr class="crit-{cls}">'
-                    f'<td class="status"><span class="crit-icon">{icon}</span> {_e(status)}</td>'
-                    f'<td>{_e(c.get("criterion"))}</td>'
-                    f'<td class="crit-ev">{ev_html}</td>'
-                    "</tr>"
-                )
-            p.append("</tbody></table>")
-        else:
-            p.append('<p class="note">No acceptance criteria on this item — judged against title/description.</p>')
-        p.append("</section>")
-
-    # Gaps (read-only finding cards, reusing the findings styling).
-    p.append('<section class="block">')
-    p.append(f"<h2>Gaps ({len(findings)})</h2>")
-    if not findings:
-        p.append('<p class="empty">No gaps — every checkable criterion is met. 🎉</p>')
-    else:
-        for severity in ("High", "Medium", "Low"):
-            for f in (x for x in findings if x["severity"] == severity):
-                sev_fg, sev_bg = _SEV_COLORS[severity]
-                file_html = _file_cell(f["file"], f.get("lineHint"), repo_root)
-                fid = html.escape(str(f.get("id", "")), quote=True)
-                p.append(f'<details class="finding" data-sev="{severity}" data-finding-id="{fid}" open>')
-                p.append(
-                    "<summary>"
-                    f'<input type="checkbox" class="pick" data-finding-id="{fid}" '
-                    'aria-label="Select gap to push">'
-                    f'<span class="badge" style="color:{sev_fg};background:{sev_bg}">{severity}</span>'
-                    f'<span class="file">{file_html}</span>'
-                    f'<span class="push-mark" data-finding-id="{fid}"></span>'
-                    "</summary>"
-                )
-                p.append('<div class="finding-body">')
-                p.append(f'<p><span class="lbl">Issue.</span> {_rich_text_html(f.get("issue", ""), repo_root)}</p>')
-                if str(f.get("reasoning", "")).strip():
-                    p.append(f'<p><span class="lbl">Reasoning.</span> {_rich_text_html(f["reasoning"], repo_root)}</p>')
-                if str(f.get("recommendation", "")).strip():
-                    p.append(f'<p><span class="lbl">Recommendation.</span> {_rich_text_html(f["recommendation"], repo_root)}</p>')
-                p.append("</div></details>")
-        p.append(
-            '<p class="note">Push these gaps as PR comments with '
-            "<code>pr-sentinel push-azure --report alignment-report.json</code>.</p>"
-        )
-    p.append("</section>")
-
-    p.append('<footer class="ftr">Generated by PR Sentinel.</footer>')
-    p.append("</main>")
-    p.append(f"<script>{_HTML_SCRIPT}</script>")
-    p.append("</body></html>")
-    return "\n".join(p) + "\n"
+    Used by `review --align`, which merges both passes into one report:
+    ``findings`` holds the code-review findings plus the alignment gap findings
+    (split apart here by agent so each shows once, under its own tab), and
+    ``alignment`` holds the per-work-item verdict sections. The single push
+    toolbar in the top bar spans every checkbox, so any mix of code findings,
+    gaps, and verdicts is pushed in one POST.
+    """
+    all_findings = report["findings"]
+    gap_findings = [f for f in all_findings if f.get("agent") == ALIGNMENT_AGENT_NAME]
+    review_findings = [f for f in all_findings if f.get("agent") != ALIGNMENT_AGENT_NAME]
+    sections = report.get("alignment", [])
+    repo_root = report.get("repoRoot")
+    tabs = [
+        {"id": "overview", "label": "Overview", "count": None,
+         "html": _overview_panel_html(report)},
+        {"id": "code", "label": "Code Review", "count": len(review_findings) or None,
+         "html": _findings_panel_html(
+             review_findings, repo_root, title="Code Review Findings",
+             empty="No code review findings. 🎉")},
+        {"id": "alignment", "label": "Alignment", "count": len(sections) or None,
+         "html": _alignment_panel_html(sections, repo_root)},
+        {"id": "gaps", "label": "Gaps", "count": len(gap_findings) or None,
+         "html": _gaps_panel_html(gap_findings, repo_root)},
+    ]
+    return _page_shell(report, subtitle="Review + Alignment", tabs=tabs)
 
 
 _ALIGNMENT_STYLE = """
@@ -574,36 +681,98 @@ table.trace td.crit-ev{color:var(--muted);}
 
 
 _HTML_STYLE = """
-:root{--bg:#f4f5f7;--card:#fff;--ink:#1f2328;--muted:#656d76;--line:#d0d7de;}
+:root{--bg:#f6f8fa;--card:#fff;--ink:#1f2328;--muted:#59636e;--line:#d1d9e0;
+  --accent:#0969da;--ok:#1a7f37;--ok-bg:#dafbe1;
+  --hi:#d1242f;--hi-bg:#ffebe9;--hi-ink:#86181d;
+  --me:#bf8700;--me-bg:#fff8c5;--me-ink:#7d4e00;
+  --lo:#0969da;--lo-bg:#ddf4ff;--lo-ink:#0a3069;
+  --radius:12px;--shadow:0 1px 3px rgba(31,35,40,.07),0 1px 2px rgba(31,35,40,.05);}
 *{box-sizing:border-box;}
+html{scroll-behavior:smooth;}
 body{margin:0;background:var(--bg);color:var(--ink);
   font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
 code{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-  font-size:.85em;background:#eaeef2;padding:1px 5px;border-radius:5px;}
-.wrap{max-width:960px;margin:0 auto;padding:28px 20px 60px;}
-.hdr{margin-bottom:18px;}
-.hdr-title{font-size:24px;font-weight:700;}
-.hdr-sub{color:var(--muted);font-weight:500;}
-.hdr-meta{color:var(--muted);font-size:13px;margin-top:6px;}
-.banner{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;
-  padding:16px 20px;border-radius:10px;margin-bottom:18px;}
-.banner-risk{font-size:18px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;}
-.banner-summary{font-size:14px;}
-.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:8px;}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
-  padding:16px 12px;text-align:center;box-shadow:0 1px 2px rgba(27,31,36,.04);}
-.card-val{font-size:26px;font-weight:700;line-height:1.1;}
-.card-lbl{font-size:12px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.4px;}
-.card.sev-high .card-val{color:#d1242f;}
-.card.sev-medium .card-val{color:#bf8700;}
-.card.sev-low .card-val{color:#0969da;}
-.card.ok .card-val{color:#1a7f37;font-size:18px;}
-.card.warn .card-val{color:#bf8700;font-size:18px;}
+  font-size:.85em;background:#eaeef2;padding:1px 6px;border-radius:6px;}
+
+/* sticky top bar */
+.topbar{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.86);
+  backdrop-filter:saturate(180%) blur(10px);-webkit-backdrop-filter:saturate(180%) blur(10px);
+  border-bottom:1px solid var(--line);}
+.topbar-inner{max-width:1060px;margin:0 auto;display:flex;align-items:center;
+  justify-content:space-between;gap:16px;padding:12px 22px;flex-wrap:wrap;}
+.brand{font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px;}
+.brand-sub{font-weight:500;color:var(--muted);font-size:14px;}
+.topbar-right{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.risk-badge{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+  padding:5px 12px;border-radius:999px;white-space:nowrap;}
+.risk-High,.risk-Unknown{color:var(--hi-ink);background:var(--hi-bg);}
+.risk-Medium{color:var(--me-ink);background:var(--me-bg);}
+.risk-Low{color:var(--lo-ink);background:var(--lo-bg);}
+.risk-None{color:var(--ok);background:var(--ok-bg);}
+.push-area{display:flex;align-items:center;gap:10px;}
+.select-all{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;}
+.push-btn{border:1px solid var(--ok);background:var(--ok);color:#fff;padding:7px 16px;
+  border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s;}
+.push-btn:hover:not(:disabled){background:#176d30;}
+.push-btn:disabled{background:#9aa4ae;border-color:#9aa4ae;cursor:not-allowed;}
+.topbar-status{max-width:1060px;margin:0 auto;padding:0 22px;}
+.topbar-status:has(.push-status:empty){display:none;}
+.push-status{font-size:13px;color:var(--muted);display:inline-block;padding-bottom:8px;}
+.push-status:empty{display:none;}
+.push-status.ok{color:var(--ok);}
+.push-status.err{color:var(--hi);}
+
+/* summary chips */
+.chips{max-width:1060px;margin:0 auto;display:flex;gap:8px;flex-wrap:wrap;padding:14px 22px 0;}
+.chip{font-size:12.5px;color:var(--muted);background:var(--card);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;display:inline-flex;gap:6px;align-items:center;}
+.chip b{color:var(--ink);font-weight:700;}
+.chip.hi b{color:var(--hi);}.chip.me b{color:var(--me);}.chip.lo b{color:var(--lo);}
+.chip.ok{color:var(--ok);border-color:#aceebb;background:var(--ok-bg);}
+.chip.warn{color:var(--me-ink);border-color:#e8d48a;background:var(--me-bg);}
+
+/* tabs */
+.tabs{max-width:1060px;margin:14px auto 0;padding:0 22px;display:flex;gap:2px;
+  border-bottom:1px solid var(--line);flex-wrap:wrap;}
+.tab{appearance:none;border:0;background:none;color:var(--muted);font-size:14px;
+  font-weight:600;padding:10px 14px;cursor:pointer;border-bottom:2px solid transparent;
+  margin-bottom:-1px;display:flex;align-items:center;gap:7px;}
+.tab:hover{color:var(--ink);}
+.tab.active{color:var(--ink);border-bottom-color:var(--accent);}
+.tab-count{font-size:11px;font-weight:700;background:#eaeef2;color:var(--muted);
+  padding:1px 7px;border-radius:999px;}
+.tab.active .tab-count{background:var(--accent);color:#fff;}
+
+/* layout + panels */
+.wrap{max-width:1060px;margin:0 auto;padding:22px 22px 64px;}
+.tabpanel{animation:fade .18s ease;}
+.tabpanel.hidden{display:none;}
+@keyframes fade{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
+.panel-title{font-size:13px;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--muted);margin:0 0 14px;}
+.meta{color:var(--muted);font-size:13px;margin:0 0 16px;}
+.muted{color:var(--muted);}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:9px 18px;font-size:14px;align-items:baseline;}
+.kv-k{color:var(--muted);}
+.kv-v{word-break:break-word;}
+
+/* risk hero */
+.hero{display:flex;flex-wrap:wrap;align-items:baseline;gap:14px;padding:18px 20px;
+  border-radius:var(--radius);margin-bottom:18px;box-shadow:var(--shadow);}
+.hero.risk-High,.hero.risk-Unknown{background:var(--hi-bg);border-left:6px solid var(--hi);}
+.hero.risk-Medium{background:var(--me-bg);border-left:6px solid var(--me);}
+.hero.risk-Low{background:var(--lo-bg);border-left:6px solid var(--lo);}
+.hero.risk-None{background:var(--ok-bg);border-left:6px solid var(--ok);}
+.hero-risk{font-size:19px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap;}
+.hero-summary{font-size:14px;}
 .note{color:var(--muted);font-size:13px;margin:4px 2px 0;}
-.block{background:var(--card);border:1px solid var(--line);border-radius:10px;
-  padding:18px 20px;margin-top:18px;box-shadow:0 1px 2px rgba(27,31,36,.04);}
+
+/* cards / tables */
+.block{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:18px 20px;margin-top:16px;box-shadow:var(--shadow);}
 .block h2{margin:0 0 14px;font-size:16px;}
-.verdict{padding:10px 14px;background:#f6f8fa;border-radius:6px;font-size:14px;}
+.verdict{padding:12px 16px;background:#f6f8fa;border-radius:8px;font-size:14px;
+  border:1px solid var(--line);}
 table.agents{width:100%;border-collapse:collapse;font-size:14px;}
 table.agents th,table.agents td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--line);}
 table.agents th:first-child,table.agents td:first-child{text-align:left;}
@@ -611,45 +780,29 @@ table.agents th:nth-child(2),table.agents td:nth-child(2){text-align:left;}
 table.agents thead th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.4px;}
 table.agents tr.total td{font-weight:700;border-bottom:none;}
 .pill{display:inline-block;padding:1px 9px;border-radius:20px;font-size:12px;font-weight:600;}
-.pill.ok{color:#1a7f37;background:#dafbe1;}
-.pill.fail{color:#86181d;background:#ffebe9;}
-.findings-head{display:flex;align-items:center;justify-content:space-between;
-  flex-wrap:wrap;gap:10px;margin-bottom:14px;}
-.findings-head h2{margin:0;}
-.filters{display:flex;gap:6px;flex-wrap:wrap;}
-.filter{border:1px solid var(--line);background:#fff;color:var(--ink);
-  padding:5px 12px;border-radius:20px;font-size:13px;cursor:pointer;}
-.filter:hover{background:#f3f4f6;}
-.filter.active{background:#1f2328;color:#fff;border-color:#1f2328;}
-.empty{color:var(--muted);text-align:center;padding:24px 0;}
-.push-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-  padding:10px 12px;margin-bottom:14px;background:#f6f8fa;
-  border:1px solid var(--line);border-radius:8px;}
-.push-all{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;}
-.push-btn{border:1px solid #1a7f37;background:#1a7f37;color:#fff;
-  padding:6px 14px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;}
-.push-btn:hover:not(:disabled){background:#176d30;}
-.push-btn:disabled{background:#8c959f;border-color:#8c959f;cursor:not-allowed;}
-.push-status{font-size:13px;color:var(--muted);}
-.push-status.ok{color:#1a7f37;}
-.push-status.err{color:#d1242f;}
-.finding summary .pick{flex:none;width:16px;height:16px;cursor:pointer;}
+.pill.ok{color:var(--ok);background:var(--ok-bg);}
+.pill.fail{color:var(--hi-ink);background:var(--hi-bg);}
+.empty{color:var(--muted);text-align:center;padding:36px 0;font-size:15px;}
+
+/* finding cards */
 .push-mark{flex:none;font-size:13px;font-weight:600;margin-left:8px;}
-.push-mark.ok{color:#1a7f37;}
-.push-mark.err{color:#d1242f;}
-.finding{border:1px solid var(--line);border-radius:8px;margin-bottom:10px;overflow:hidden;}
-.finding summary{display:flex;align-items:center;gap:10px;padding:11px 14px;
+.push-mark.ok{color:var(--ok);}
+.push-mark.err{color:var(--hi);}
+.finding summary .pick{flex:none;width:16px;height:16px;cursor:pointer;}
+.finding{background:var(--card);border:1px solid var(--line);border-radius:10px;
+  margin-bottom:10px;overflow:hidden;box-shadow:var(--shadow);}
+.finding summary{display:flex;align-items:center;gap:10px;padding:12px 14px;
   cursor:pointer;list-style:none;}
 .finding summary::-webkit-details-marker{display:none;}
 .finding summary:hover{background:#f6f8fa;}
-.finding[data-sev=High]{border-left:4px solid #d1242f;}
-.finding[data-sev=Medium]{border-left:4px solid #bf8700;}
-.finding[data-sev=Low]{border-left:4px solid #0969da;}
+.finding[data-sev=High]{border-left:4px solid var(--hi);}
+.finding[data-sev=Medium]{border-left:4px solid var(--me);}
+.finding[data-sev=Low]{border-left:4px solid var(--lo);}
 .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:5px;
   text-transform:uppercase;letter-spacing:.4px;flex:none;}
 .file{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:13px;font-weight:600;flex:none;}
-.file-link{color:#0969da;text-decoration:none;}
+.file-link{color:var(--accent);text-decoration:none;}
 .file-link:hover{text-decoration:underline;}
 .loc{color:var(--muted);font-weight:400;}
 .agent-tag{font-size:12px;color:var(--muted);background:#eaeef2;
@@ -661,41 +814,45 @@ table.agents tr.total td{font-weight:700;border-bottom:none;}
 .finding-body li:first-child{margin-top:0;}
 .lbl{font-weight:700;}
 .ftr{text-align:center;color:var(--muted);font-size:12px;margin-top:30px;}
-@media(max-width:680px){.cards{grid-template-columns:repeat(2,1fr);}}
+@media(max-width:640px){.brand-sub{display:none;}.push-btn{padding:7px 12px;}}
 """
 
 _HTML_SCRIPT = """
+// Tab switching: show the clicked panel, hide the rest.
 (function(){
-  var buttons=document.querySelectorAll('.filter');
-  var findings=document.querySelectorAll('.finding');
-  buttons.forEach(function(btn){
-    btn.addEventListener('click',function(){
-      var sev=btn.getAttribute('data-sev');
-      buttons.forEach(function(b){b.classList.remove('active');});
-      btn.classList.add('active');
-      findings.forEach(function(f){
-        f.style.display=(sev==='all'||f.getAttribute('data-sev')===sev)?'':'none';
-      });
+  var tabs=Array.prototype.slice.call(document.querySelectorAll('.tab'));
+  var panels=Array.prototype.slice.call(document.querySelectorAll('.tabpanel'));
+  tabs.forEach(function(t){
+    t.addEventListener('click',function(){
+      var id=t.getAttribute('data-tab');
+      tabs.forEach(function(x){x.classList.toggle('active',x===t);});
+      panels.forEach(function(p){p.classList.toggle('hidden',p.getAttribute('data-panel')!==id);});
     });
   });
 })();
 
-// Push selected findings to an Azure DevOps PR. Active only when this page is
-// served by `pr-sentinel push-azure`, which injects window.PRS_PUSH.
+// Push selected items to an Azure DevOps PR. Active only when this page is
+// served by `pr-sentinel push-azure` / `review --pr`, which inject window.PRS_PUSH.
 (function(){
   var cfg=window.PRS_PUSH;
-  var bar=document.getElementById('push-bar');
-  if(!bar) return;
   var btn=document.getElementById('push-btn');
   var status=document.getElementById('push-status');
   var selectAll=document.getElementById('push-select-all');
   var picks=Array.prototype.slice.call(document.querySelectorAll('.pick'));
+  if(!btn) return;
 
+  // offsetParent is null when an element is inside a hidden (display:none) tab
+  // panel, so "visible" means "on the active tab".
+  function visible(cb){ return cb.offsetParent!==null; }
   function selectedIds(){
     return picks.filter(function(cb){return cb.checked&&!cb.disabled;})
                 .map(function(cb){return cb.getAttribute('data-finding-id');});
   }
-  function updateBtn(){ if(cfg) btn.disabled=selectedIds().length===0; }
+  function updateBtn(){
+    var n=selectedIds().length;
+    btn.textContent=n?('Push selected ('+n+')'):'Push selected';
+    if(cfg) btn.disabled=n===0;
+  }
 
   // A checkbox inside <summary> would otherwise toggle the details panel.
   picks.forEach(function(cb){
@@ -703,12 +860,9 @@ _HTML_SCRIPT = """
     cb.addEventListener('change',updateBtn);
   });
   if(selectAll){
-    selectAll.addEventListener('click',function(e){e.stopPropagation();});
     selectAll.addEventListener('change',function(){
       picks.forEach(function(cb){
-        if(cb.disabled) return;
-        var f=cb.closest('.finding');
-        if(!f||f.style.display!=='none') cb.checked=selectAll.checked;
+        if(!cb.disabled&&visible(cb)) cb.checked=selectAll.checked;
       });
       updateBtn();
     });
@@ -718,7 +872,13 @@ _HTML_SCRIPT = """
     var mark=document.querySelector('.push-mark[data-finding-id="'+id+'"]');
     if(mark){mark.className='push-mark ok';mark.textContent=label||'✓ pushed';}
     var cb=document.querySelector('.pick[data-finding-id="'+id+'"]');
-    if(cb){cb.checked=false;cb.disabled=true;}
+    if(cb){
+      cb.checked=false;
+      // Alignment verdicts (align:*) are upserted — re-pushing refreshes them,
+      // so keep them selectable. Finding/gap threads are idempotent (re-push is
+      // a no-op), so lock them to avoid pointless re-selection.
+      if(id.indexOf('align:')!==0){ cb.disabled=true; }
+    }
   }
   function markError(id,msg){
     var mark=document.querySelector('.push-mark[data-finding-id="'+id+'"]');
@@ -727,21 +887,21 @@ _HTML_SCRIPT = """
 
   if(!cfg){
     btn.disabled=true;
-    status.textContent='Serve this report with `pr-sentinel push-azure --pr <id>` to push.';
+    if(status) status.textContent='Serve this report with `pr-sentinel review --pr <id>` (or `push-azure --pr <id>`) to push.';
     return;
   }
 
-  // On load, mark findings already commented on the PR (survives refresh and
-  // re-running the server) so you don't re-select what's already there.
+  // On load, mark items already commented on the PR (survives refresh / server
+  // restart) so you don't re-select what's already there.
   if(cfg.statusUrl){
     fetch(cfg.statusUrl+'?token='+encodeURIComponent(cfg.token))
       .then(function(r){return r.json();})
       .then(function(data){
         var ids=(data&&data.ids)||[];
         ids.forEach(function(id){markPushed(id,'✓ already pushed');});
-        if(ids.length){
+        if(ids.length&&status){
           status.className='push-status';
-          status.textContent=ids.length+' finding(s) already pushed to this PR.';
+          status.textContent=ids.length+' item(s) already pushed to this PR.';
         }
         updateBtn();
       })
@@ -752,8 +912,7 @@ _HTML_SCRIPT = """
     var ids=selectedIds();
     if(!ids.length) return;
     btn.disabled=true;
-    status.className='push-status';
-    status.textContent='Pushing '+ids.length+' finding(s)…';
+    if(status){status.className='push-status';status.textContent='Pushing '+ids.length+' item(s)…';}
     fetch(cfg.url,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({ids:ids,token:cfg.token})})
       .then(function(r){return r.json();})
@@ -764,13 +923,14 @@ _HTML_SCRIPT = """
           if(res.ok){markPushed(res.id,res.skipped?'✓ already pushed':'✓ pushed');ok++;}
           else{markError(res.id,res.error);fail++;}
         });
-        status.className='push-status '+(fail?'err':'ok');
-        status.textContent='Pushed '+ok+' finding(s)'+(fail?(', '+fail+' failed'):'')+'.';
+        if(status){
+          status.className='push-status '+(fail?'err':'ok');
+          status.textContent='Pushed '+ok+' item(s)'+(fail?(', '+fail+' failed'):'')+'.';
+        }
         updateBtn();
       })
       .catch(function(err){
-        status.className='push-status err';
-        status.textContent='Push failed: '+err.message;
+        if(status){status.className='push-status err';status.textContent='Push failed: '+err.message;}
         btn.disabled=false;
       });
   });

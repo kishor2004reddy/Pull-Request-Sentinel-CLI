@@ -205,6 +205,43 @@ def test_get_work_items_empty_ids_skips_request():
     assert client.get_work_items([]) == []
 
 
+# --- Pull request branch resolution -----------------------------------------
+
+@pytest.mark.parametrize(
+    "ref, expected",
+    [("refs/heads/main", "main"),
+     ("refs/heads/feature/azure-comment", "feature/azure-comment"),
+     ("main", "main"), ("", ""), (None, "")],
+)
+def test_strip_ref(ref, expected):
+    assert azure_devops._strip_ref(ref) == expected
+
+
+def test_pull_request_url_well_formed():
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    url = client._pull_request_url(124)
+    assert "/o/p/_apis/git/repositories/r/pullRequests/124" in url
+    assert "/workitems" not in url
+    assert "api-version=" in url
+
+
+def test_get_pull_request_strips_branch_refs(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    monkeypatch.setattr(
+        client, "_request",
+        lambda *a, **k: {
+            "sourceRefName": "refs/heads/feature/azure-comment",
+            "targetRefName": "refs/heads/main",
+            "title": "Add azure comment",
+        },
+    )
+    pr = client.get_pull_request(124)
+    assert pr.id == 124
+    assert pr.source_branch == "feature/azure-comment"
+    assert pr.target_branch == "main"
+    assert pr.title == "Add azure comment"
+
+
 # --- Alignment summary comment ----------------------------------------------
 
 def test_format_alignment_comment_has_verdict_table_and_escapes_pipes():
@@ -264,6 +301,79 @@ def test_upsert_alignment_comment_creates_when_absent(monkeypatch):
     assert prop["$value"] == "1234"
 
 
+def _threads_response(threads):
+    return {"value": threads}
+
+
+def test_list_thread_finding_ids_counts_live_threads(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    threads = _threads_response([
+        {
+            "comments": [{"id": 1, "isDeleted": False}],
+            "properties": {azure_devops.THREAD_PROPERTY_KEY: {"$value": "abc123"}},
+        },
+    ])
+    monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
+    assert client.list_thread_finding_ids(5) == {"abc123"}
+
+
+def test_list_thread_finding_ids_skips_soft_deleted_comment(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    # Azure keeps the thread + its PRSentinelFindingId property but marks the
+    # comment isDeleted — the finding should NOT be reported as already pushed.
+    threads = _threads_response([
+        {
+            "comments": [{"id": 1, "isDeleted": True}],
+            "properties": {azure_devops.THREAD_PROPERTY_KEY: {"$value": "abc123"}},
+        },
+    ])
+    monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
+    assert client.list_thread_finding_ids(5) == set()
+
+
+def test_list_thread_finding_ids_keeps_thread_with_one_live_comment(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    # Finding comment deleted but a teammate's reply remains → thread still live.
+    threads = _threads_response([
+        {
+            "comments": [{"id": 1, "isDeleted": True}, {"id": 2, "isDeleted": False}],
+            "properties": {azure_devops.THREAD_PROPERTY_KEY: {"$value": "abc123"}},
+        },
+    ])
+    monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
+    assert client.list_thread_finding_ids(5) == {"abc123"}
+
+
+def test_list_alignment_work_item_ids_reads_alignment_marker(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    threads = _threads_response([
+        {  # a finding thread — must NOT be returned here
+            "comments": [{"id": 1, "isDeleted": False}],
+            "properties": {azure_devops.THREAD_PROPERTY_KEY: {"$value": "abc123"}},
+        },
+        {  # an alignment verdict thread, still live
+            "comments": [{"id": 2, "isDeleted": False}],
+            "properties": {azure_devops.ALIGNMENT_THREAD_PROPERTY_KEY: {"$value": "17"}},
+        },
+    ])
+    monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
+    assert client.list_alignment_work_item_ids(5) == {"17"}
+    # The finding-id lister sees only the finding thread, not the alignment one.
+    assert client.list_thread_finding_ids(5) == {"abc123"}
+
+
+def test_list_alignment_work_item_ids_skips_soft_deleted(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    threads = _threads_response([
+        {
+            "comments": [{"id": 2, "isDeleted": True}],
+            "properties": {azure_devops.ALIGNMENT_THREAD_PROPERTY_KEY: {"$value": "17"}},
+        },
+    ])
+    monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
+    assert client.list_alignment_work_item_ids(5) == set()
+
+
 def test_find_alignment_thread_matches_marker(monkeypatch):
     client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
     threads = {
@@ -281,3 +391,44 @@ def test_find_alignment_thread_matches_marker(monkeypatch):
     monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
     assert client._find_alignment_thread(7, "1234") == (20, 2)
     assert client._find_alignment_thread(7, "9999") is None
+
+
+def test_find_alignment_thread_skips_soft_deleted_comment(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    # User deleted the verdict comment on the PR: Azure keeps the thread + marker
+    # but the comment is isDeleted. We must NOT return it (patching it stays
+    # invisible) — return None so upsert creates a fresh thread.
+    threads = {
+        "value": [{
+            "id": 20,
+            "comments": [{"id": 2, "isDeleted": True}],
+            "properties": {azure_devops.ALIGNMENT_THREAD_PROPERTY_KEY: {"$value": "1234"}},
+        }]
+    }
+    monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
+    assert client._find_alignment_thread(7, "1234") is None
+
+
+def test_upsert_creates_new_thread_when_only_comment_deleted(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    threads = {
+        "value": [{
+            "id": 20,
+            "comments": [{"id": 2, "isDeleted": True}],
+            "properties": {azure_devops.ALIGNMENT_THREAD_PROPERTY_KEY: {"$value": "1234"}},
+        }]
+    }
+    calls = []
+
+    def fake(method, url, body=None, **k):
+        calls.append((method, url, body))
+        return threads if method == "GET" else {"id": 99}
+
+    monkeypatch.setattr(client, "_request", fake)
+    client.upsert_alignment_comment(7, 1234, "refreshed verdict")
+    methods = [m for m, *_ in calls]
+    # The dead comment is never PATCHed; a new (visible) thread is POSTed instead.
+    assert "PATCH" not in methods
+    assert methods[-1] == "POST"
+    body = calls[-1][2]
+    assert body["properties"][azure_devops.ALIGNMENT_THREAD_PROPERTY_KEY]["$value"] == "1234"

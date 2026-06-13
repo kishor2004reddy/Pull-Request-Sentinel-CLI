@@ -24,7 +24,11 @@ from pr_sentinel.integrations.azure_devops import (
     format_finding_comment,
     line_from_hint,
 )
-from pr_sentinel.report_generator import _render_alignment_html, _render_html
+from pr_sentinel.report_generator import (
+    _render_alignment_html,
+    _render_combined_html,
+    _render_html,
+)
 
 
 def _push_alignment(client: AzureDevOpsClient, pr_id: int, section: dict) -> dict:
@@ -100,13 +104,17 @@ def _build_handler(html_page: str, findings_by_id: dict, alignment_by_id: dict, 
             if parts.path in ("/", "/index.html", "/report"):
                 self._send(200, html_page.encode("utf-8"), "text/html; charset=utf-8")
             elif parts.path == "/pushed":
-                # Live list of finding ids already commented on the PR, so the
-                # page can mark them on load (and after a refresh / server restart).
+                # Live list of item ids already commented on the PR, so the page
+                # can mark them on load (and after a refresh / server restart).
+                # Includes finding/gap threads (PRSentinelFindingId) and alignment
+                # verdicts (align:<workItemId>, tagged PRSentinelAlignmentWorkItem).
                 token = (parse_qs(parts.query).get("token") or [""])[0]
                 if not secrets.compare_digest(token, nonce):
                     self._reply({"error": "invalid or missing session token"}, 403)
                     return
-                self._reply({"ids": sorted(client.list_thread_finding_ids(pr_id))}, 200)
+                ids = set(client.list_thread_finding_ids(pr_id))
+                ids |= {f"align:{w}" for w in client.list_alignment_work_item_ids(pr_id)}
+                self._reply({"ids": sorted(ids)}, 200)
             else:
                 self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -167,7 +175,15 @@ def start_server(
         for s in alignment_sections
         if s.get("workItem", {}).get("id") is not None
     }
-    render = _render_alignment_html if alignment_sections else _render_html
+    # A report with both code-review findings and alignment sections (from
+    # `review --align`) gets the combined page; alignment-only and review-only
+    # reports get their dedicated renderer.
+    if alignment_sections and findings_by_id:
+        render = _render_combined_html
+    elif alignment_sections:
+        render = _render_alignment_html
+    else:
+        render = _render_html
 
     nonce = secrets.token_urlsafe(24)
     config_script = (

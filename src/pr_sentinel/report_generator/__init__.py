@@ -261,6 +261,7 @@ def _agent_summary_data(report: dict) -> tuple[list[dict], dict]:
 from pr_sentinel.report_generator.markdown import _render_markdown  # noqa: E402
 from pr_sentinel.report_generator.html import (  # noqa: E402
     _render_alignment_html,
+    _render_combined_html,
     _render_html,
     _rich_text_html,
 )

@@ -66,6 +66,13 @@ ALIGNMENT_AGENT_NAME = "Alignment Agent"
 ALIGNMENT_VERDICTS = {"Satisfied", "Partial", "Not satisfied"}
 ALIGNMENT_CRITERION_STATUSES = {"Met", "Partial", "Not met", "Unverifiable"}
 ALIGNMENT_CONFIDENCES = {"High", "Low"}
+# Alignment is one holistic provider call per work item (the whole diff in a
+# single prompt), so it does NOT chunk like the routed agents — it needs its own,
+# larger budget than DEFAULT_CHUNK_BUDGET. 500k chars (~150k-165k tokens for a
+# diff) covers virtually every real PR in one call while staying well clear of
+# the model's ~1M-token context window (room for the prompt + output) and likely
+# within the provider CLI's input limits. Diffs above this are truncated.
+ALIGNMENT_DIFF_BUDGET = 500_000
 
 # --- Report output ----------------------------------------------------------
 # "both" stays json+markdown for backward compatibility; "all" adds html.

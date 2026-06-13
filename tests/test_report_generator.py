@@ -232,6 +232,106 @@ def test_render_alignment_html_no_criteria_notes_coarse_item():
     assert "Gaps (0)" in html
 
 
+def _combined_report() -> dict:
+    """A report shaped like `review --align` produces: code findings + alignment
+    gap findings merged into `findings`, plus `alignment` verdict sections."""
+    code = _finding("High", "svc.py", recommendation="sanitize input")
+    gap = {
+        "agent": "Alignment Agent",
+        "severity": "Medium",
+        "file": "(requirement)",
+        "lineHint": "",
+        "issue": "Empty-list message is missing",
+        "reasoning": "criterion not satisfied",
+        "recommendation": "show a message when the list is empty",
+    }
+    report = report_generator.build_report(
+        agent_results=[
+            {"agent": "Security Agent", "findings": [code]},
+            {"agent": "Alignment Agent", "findings": [gap]},
+        ],
+        base_branch="main",
+        source="branch:main...HEAD",
+    )
+    report["alignment"] = [
+        {
+            "workItem": {"id": 77, "type": "User Story", "state": "Active",
+                         "title": "Add CSV export"},
+            "verdict": "Partial",
+            "confidence": "High",
+            "summary": "Export works but empty-list is missing.",
+            "truncatedDiff": False,
+            "criteria": [
+                {"criterion": "Export downloads a CSV", "status": "Met", "evidence": "Export()"},
+                {"criterion": "Empty list shows a message", "status": "Not met", "evidence": "missing"},
+            ],
+        }
+    ]
+    return report
+
+
+def test_render_combined_html_shows_review_and_alignment_once_each():
+    report = _combined_report()
+    html = report_generator._render_combined_html(report)
+
+    assert html.startswith("<!DOCTYPE html>")
+    assert "Review + Alignment" in html
+    # Code review side
+    assert "Code Review Findings" in html
+    assert "sanitize input" in html
+    # Alignment side
+    assert "Requirement Alignment" in html
+    assert "verdict-badge" in html and "Partial" in html
+    assert 'class="trace"' in html
+    assert "Empty list shows a message" in html
+    assert "Gaps (1)" in html
+    assert "show a message when the list is empty" in html
+
+    # Exactly one push toolbar, and the gap finding renders once (not duplicated
+    # between the code-review list and the gaps list). A single card carries its
+    # id three times: on <details>, the checkbox, and the push-mark.
+    assert html.count('id="push-bar"') == 1
+    gap_id = next(f["id"] for f in report["findings"] if f["agent"] == "Alignment Agent")
+    assert html.count(f'data-finding-id="{gap_id}"') == 3  # one card, not duplicated
+
+
+def test_combined_html_has_a_checkbox_per_pushable_item():
+    report = _combined_report()
+    html = report_generator._render_combined_html(report)
+    # One verdict checkbox (align:77) + one code finding + one gap finding.
+    assert 'data-finding-id="align:77"' in html
+    code_id = next(f["id"] for f in report["findings"] if f["agent"] == "Security Agent")
+    assert f'data-finding-id="{code_id}"' in html
+
+
+def test_overview_renders_pr_section_when_present():
+    report = report_generator.build_report(
+        agent_results=[_result([_finding("High")])],
+        base_branch="main",
+        source="branch:origin/main...origin/feature/x",
+    )
+    report["pr"] = {
+        "id": 17, "org": "myorg", "project": "myproj", "repo": "myrepo",
+        "title": "Add CSV export", "baseBranch": "main", "sourceBranch": "feature/x",
+    }
+    html = report_generator._render_html(report)
+    assert "Pull Request" in html
+    assert "#17" in html
+    assert "myorg/myproj/myrepo" in html
+    assert "feature/x" in html
+    # PR number links to the Azure DevOps PR page.
+    assert "dev.azure.com/myorg/myproj/_git/myrepo/pullrequest/17" in html
+
+
+def test_overview_omits_pr_section_when_absent():
+    report = report_generator.build_report(
+        agent_results=[_result([_finding("Low")])],
+        base_branch="main",
+        source="branch:main",
+    )
+    assert "Pull Request" not in report_generator._render_html(report)
+
+
 def test_key_recommendations_deduplicated():
     findings = [
         _finding("High", "a.py", recommendation="same fix"),

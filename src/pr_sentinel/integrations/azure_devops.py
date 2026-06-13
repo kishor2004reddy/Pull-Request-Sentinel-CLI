@@ -110,6 +110,13 @@ class AzureDevOpsClient:
             f"/pullRequests/{pr_id}/workitems?api-version={self.api_version}"
         )
 
+    def _pull_request_url(self, pr_id: int) -> str:
+        return (
+            f"{self.base_url}/{quote(self.org)}/{quote(self.project)}"
+            f"/_apis/git/repositories/{quote(self.repo)}"
+            f"/pullRequests/{pr_id}?api-version={self.api_version}"
+        )
+
     def _work_items_url(self, ids: list[int], fields: tuple[str, ...]) -> str:
         ids_csv = ",".join(str(i) for i in ids)
         fields_csv = quote(",".join(fields))
@@ -150,22 +157,46 @@ class AzureDevOpsClient:
             raise AzureDevOpsError(f"Could not reach Azure DevOps: {e.reason}") from e
         return json.loads(raw) if raw else {}
 
-    def list_thread_finding_ids(self, pr_id: int) -> set[str]:
-        """Finding ids already posted to this PR by PR Sentinel.
+    def _live_marker_values(self, pr_id: int, property_key: str) -> set[str]:
+        """Values of ``property_key`` across the PR's threads that are still live.
 
-        Used to skip findings that were pushed on an earlier run. Best-effort:
-        returns an empty set if threads can't be listed.
+        Azure DevOps soft-deletes comments (sets ``isDeleted: true``) but keeps
+        the thread and its properties, so a thread is only counted when at least
+        one of its comments survives — otherwise deleting the comment on the PR
+        would never clear the marker. Best-effort: returns an empty set if the
+        threads can't be listed.
         """
         try:
             data = self._request("GET", self._threads_url(pr_id))
         except AzureDevOpsError:
             return set()
-        ids: set[str] = set()
+        values: set[str] = set()
         for thread in data.get("value", []):
-            prop = (thread.get("properties") or {}).get(THREAD_PROPERTY_KEY)
-            if isinstance(prop, dict) and prop.get("$value"):
-                ids.add(str(prop["$value"]))
-        return ids
+            prop = (thread.get("properties") or {}).get(property_key)
+            if not (isinstance(prop, dict) and prop.get("$value")):
+                continue
+            comments = thread.get("comments") or []
+            if any(not c.get("isDeleted") for c in comments):
+                values.add(str(prop["$value"]))
+        return values
+
+    def list_thread_finding_ids(self, pr_id: int) -> set[str]:
+        """Finding ids already posted to this PR by PR Sentinel and still live.
+
+        Used to skip findings pushed on an earlier run and to mark them in the
+        report UI. Finding threads are tagged with ``PRSentinelFindingId``.
+        """
+        return self._live_marker_values(pr_id, THREAD_PROPERTY_KEY)
+
+    def list_alignment_work_item_ids(self, pr_id: int) -> set[str]:
+        """Work item ids whose alignment-summary comment is still live on the PR.
+
+        Alignment verdicts are posted with ``upsert_alignment_comment``, which
+        tags the thread with ``PRSentinelAlignmentWorkItem`` (keyed by work item
+        id) rather than ``PRSentinelFindingId`` — so they need their own lookup
+        for the report UI to mark them as already pushed.
+        """
+        return self._live_marker_values(pr_id, ALIGNMENT_THREAD_PROPERTY_KEY)
 
     def create_pr_thread(
         self,
@@ -215,11 +246,17 @@ class AzureDevOpsClient:
         )
 
     def _find_alignment_thread(self, pr_id: int, marker: str) -> tuple[int, int] | None:
-        """Locate this work item's existing alignment-summary thread.
+        """Locate this work item's existing, still-live alignment-summary thread.
 
-        Returns ``(thread_id, first_comment_id)`` when a prior summary thread for
-        ``marker`` (the work item id) is found, else ``None``. Best-effort: returns
-        ``None`` if threads can't be listed.
+        Returns ``(thread_id, comment_id)`` of the first *non-deleted* comment in
+        a prior summary thread for ``marker`` (the work item id), else ``None``.
+
+        Soft-deleted comments are skipped on purpose: Azure DevOps keeps the
+        thread and its marker property after the user deletes the comment on the
+        PR, but PATCHing a deleted comment returns 200 without making it visible
+        again. Skipping it makes :meth:`upsert_alignment_comment` create a fresh,
+        visible thread instead of silently patching a dead one. Best-effort:
+        returns ``None`` if threads can't be listed.
         """
         try:
             data = self._request("GET", self._threads_url(pr_id))
@@ -227,10 +264,13 @@ class AzureDevOpsClient:
             return None
         for thread in data.get("value", []):
             prop = (thread.get("properties") or {}).get(ALIGNMENT_THREAD_PROPERTY_KEY)
-            if isinstance(prop, dict) and str(prop.get("$value")) == marker:
-                comments = thread.get("comments") or []
-                if thread.get("id") and comments and comments[0].get("id"):
-                    return int(thread["id"]), int(comments[0]["id"])
+            if not (isinstance(prop, dict) and str(prop.get("$value")) == marker):
+                continue
+            if not thread.get("id"):
+                continue
+            for c in thread.get("comments") or []:
+                if not c.get("isDeleted") and c.get("id"):
+                    return int(thread["id"]), int(c["id"])
         return None
 
     def upsert_alignment_comment(
@@ -266,6 +306,24 @@ class AzureDevOpsClient:
             },
         }
         return self._request("POST", self._threads_url(pr_id), body)
+
+    def get_pull_request(self, pr_id: int) -> "PullRequest":
+        """Fetch a PR's source/target branches so a review can diff exactly what
+        Azure DevOps shows for it, regardless of what's checked out locally.
+
+        ``sourceRefName``/``targetRefName`` come back fully qualified
+        (``refs/heads/feature/x``); they're stripped to bare branch names. Needs
+        the Code (read) scope on the PAT.
+        """
+        data = self._request(
+            "GET", self._pull_request_url(pr_id), scope_hint="Code (read)"
+        )
+        return PullRequest(
+            id=pr_id,
+            source_branch=_strip_ref(data.get("sourceRefName")),
+            target_branch=_strip_ref(data.get("targetRefName")),
+            title=str(data.get("title", "") or "").strip(),
+        )
 
     def get_pr_work_items(self, pr_id: int) -> list[int]:
         """Return the IDs of the work items linked to a pull request.
@@ -306,6 +364,24 @@ class AzureDevOpsClient:
             scope_hint="Work Items (read)",
         )
         return [normalize_work_item(raw) for raw in data.get("value", [])]
+
+
+@dataclass
+class PullRequest:
+    """The subset of an Azure DevOps pull request the review needs: its source
+    and target branches (bare names, no ``refs/heads/`` prefix)."""
+
+    id: int
+    source_branch: str
+    target_branch: str
+    title: str = ""
+
+
+def _strip_ref(ref: str | None) -> str:
+    """Strip a fully-qualified branch ref (``refs/heads/x``) to its bare name."""
+    if not ref:
+        return ""
+    return re.sub(r"^refs/heads/", "", str(ref).strip())
 
 
 @dataclass

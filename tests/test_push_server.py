@@ -3,14 +3,18 @@ from pr_sentinel.integrations.azure_devops import AzureDevOpsError
 
 
 class FakeClient:
-    def __init__(self, already=None, fail_ids=None):
+    def __init__(self, already=None, fail_ids=None, aligned=None):
         self._already = set(already or [])
         self._fail_ids = set(fail_ids or [])
+        self._aligned = set(aligned or [])
         self.created = []
         self.upserted = []
 
     def list_thread_finding_ids(self, pr_id):
         return set(self._already)
+
+    def list_alignment_work_item_ids(self, pr_id):
+        return set(self._aligned)
 
     def create_pr_thread(self, pr_id, content, finding_id=None,
                          file_path=None, line=None):
@@ -97,3 +101,60 @@ def test_push_alignment_content_is_markdown_verdict():
     content = client.upserted[0][2]
     assert "Requirement Alignment" in content
     assert "Alignment: Partial" in content
+
+
+import urllib.request
+
+
+def _served_html(report) -> str:
+    client = FakeClient()
+    url, httpd = push_server.start_server(
+        report, client, 7, port=0, open_browser=False
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return resp.read().decode("utf-8")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def _alignment_section():
+    return {
+        "workItem": {"id": 1234, "type": "User Story", "state": "Active",
+                     "title": "Add export"},
+        "verdict": "Partial", "confidence": "High", "summary": "gap",
+        "criteria": [{"criterion": "Button", "status": "Met", "evidence": "x"}],
+    }
+
+
+def test_server_uses_combined_renderer_when_findings_and_alignment():
+    report = {
+        "tool": "PR Sentinel", "baseBranch": "main", "source": "branch:main...HEAD",
+        "reviewedAt": "2026-06-12T00:00:00+00:00", "riskLevel": "High",
+        "coverageComplete": True, "summary": "1 finding(s): 1 High.",
+        "agentsExecuted": ["Security Agent", "Alignment Agent"], "failedAgents": [],
+        "repoRoot": None,
+        "findings": [{"id": "x", "agent": "Security Agent", "severity": "High",
+                      "file": "f.py", "lineHint": "+1", "issue": "bad"}],
+        "alignment": [_alignment_section()],
+    }
+    html = _served_html(report)
+    assert "Review + Alignment" in html          # combined renderer header
+    assert "Code Review Findings" in html
+    assert "verdict-badge" in html
+    assert html.count('id="push-bar"') == 1
+
+
+def test_server_uses_alignment_renderer_when_only_alignment():
+    report = {
+        "tool": "PR Sentinel", "baseBranch": "main", "source": "alignment:PR#7",
+        "reviewedAt": "2026-06-12T00:00:00+00:00", "riskLevel": "None",
+        "coverageComplete": True, "summary": "No issues.",
+        "agentsExecuted": ["Alignment Agent"], "failedAgents": [], "repoRoot": None,
+        "findings": [],
+        "alignment": [_alignment_section()],
+    }
+    html = _served_html(report)
+    assert "Requirement Alignment" in html
+    assert "Review + Alignment" not in html      # not the combined page
