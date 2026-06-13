@@ -372,7 +372,7 @@ def main() -> None:
     type=click.Choice(sorted(VALID_FORMATS)),
     default=DEFAULT_REPORT_FORMAT,
     show_default=True,
-    help="Report format(s) to emit.",
+    help="Report format(s) to emit. 'both' (default) = json+html; 'all' = json+html+markdown.",
 )
 @click.option(
     "--max-file-size",
@@ -863,9 +863,9 @@ def review(
     written: list[Path] = []
     if out_format in ("json", "both", "all"):
         written.append(report_generator.write_json(report, out_dir))
-    if out_format in ("markdown", "both", "all"):
+    if out_format in ("markdown", "all"):
         written.append(report_generator.write_markdown(report, out_dir))
-    if out_format in ("html", "all"):
+    if out_format in ("html", "both", "all"):
         written.append(report_generator.write_html(report, out_dir))
 
     console.print(ui.findings_table(report_results))
