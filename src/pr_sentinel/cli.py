@@ -866,7 +866,14 @@ def review(
     if out_format in ("markdown", "all"):
         written.append(report_generator.write_markdown(report, out_dir))
     if out_format in ("html", "both", "all"):
-        written.append(report_generator.write_html(report, out_dir))
+        _align_secs = report.get("alignment")
+        _findings = report.get("findings", [])
+        if _align_secs and _findings:
+            written.append(report_generator.write_combined_html(report, out_dir))
+        elif _align_secs:
+            written.append(report_generator.write_alignment_html(report, out_dir))
+        else:
+            written.append(report_generator.write_html(report, out_dir))
 
     console.print(ui.findings_table(report_results))
 

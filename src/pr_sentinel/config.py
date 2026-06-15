@@ -16,7 +16,7 @@ DEFAULT_SUMMARY_TIMEOUT = 300
 # --- Providers ---------------------------------------------------------------
 # A provider is an AI CLI we shell out to. Each has its own model namespace,
 # so the default model is resolved *per provider* (see default_model_for).
-DEFAULT_PROVIDER = "copilot"
+DEFAULT_PROVIDER = "claude"
 VALID_PROVIDERS = {"claude", "copilot"}
 
 # Claude Code CLI defaults (shortcuts understood by `claude --model`).

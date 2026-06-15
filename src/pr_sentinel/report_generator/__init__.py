@@ -153,6 +153,13 @@ def write_alignment_html(report: dict, out_dir: Path) -> Path:
     return path
 
 
+def write_combined_html(report: dict, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / REPORT_HTML_FILENAME
+    path.write_text(_render_combined_html(report), encoding="utf-8")
+    return path
+
+
 # --- Report-level helpers shared by the renderers ---------------------------
 
 def _merge_verdict(report: dict) -> str:
@@ -271,6 +278,7 @@ __all__ = [
     "write_json",
     "write_markdown",
     "write_html",
+    "write_combined_html",
     "write_alignment_json",
     "write_alignment_html",
 ]
