@@ -8,7 +8,7 @@ Local pull-request review tool. Reads a git diff, runs four specialized review a
 
 With `--pr`, the review diffs the PR's own branches, checks whether the change satisfies the PR's linked Azure DevOps work item(s) (`--align`), and ends in an interactive HTML page where you can select findings, gaps, and alignment verdicts to push back to the PR as comment threads — all in one command.
 
-No API keys. No hosted services. PR Sentinel shells out to a provider CLI you already have — the GitHub Copilot CLI (default) or `claude -p` (`--provider claude`) — and uses that tool's existing authentication. See [Providers](#providers).
+No API keys. No hosted services. PR Sentinel shells out to a provider CLI you already have — the Claude Code CLI (default) or the GitHub Copilot CLI (`--provider copilot`) — and uses that tool's existing authentication. See [Providers](#providers).
 
 Reports come out as JSON, Markdown, or a self-contained HTML page with editor deep-links (`--format`).
 
@@ -88,8 +88,8 @@ If a chunk contains mixed file types (e.g. a `.cs` file and a `.css` file togeth
 
 - Python 3.11+
 - At least one supported provider CLI, installed and authenticated:
-  - **Copilot** (default) — [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli). `copilot --version` must work, and you must have run `copilot login`.
-  - **Claude** (optional, `--provider claude`) — [Claude Code CLI](https://docs.claude.com/en/docs/claude-code). `claude --version` must work from your shell.
+  - **Claude** (default) — [Claude Code CLI](https://docs.claude.com/en/docs/claude-code). `claude --version` must work from your shell.
+  - **Copilot** (optional, `--provider copilot`) — [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli). `copilot --version` must work, and you must have run `copilot login`.
 - Git, if you want to review live branches (not required for `--diff` mode).
 - An Azure DevOps Personal Access Token when using `--pr`, `--align`, `push-azure`, or `review-alignment`. See [Azure DevOps PAT](#azure-devops-pat).
 
@@ -161,7 +161,7 @@ Review a diff and write a structured report. With `--pr`, the command also opens
 | `--format` | `both` | Report format(s): `json`, `markdown`, `html`, `both` (json+html, default), or `all` (json+html+markdown). |
 | `--max-file-size` | `20000` | Per-file diff size cap (chars). Larger files get truncated with a marker. |
 | `--chunk-budget` | `100000` | Max combined diff size per provider call before chunking kicks in. Does not affect the alignment agent (see `ALIGNMENT_DIFF_BUDGET`). |
-| `--provider` | `copilot` | AI CLI to run the agents through. `copilot` shells out to the GitHub Copilot CLI; `claude` shells out to `claude -p`. See [Providers](#providers). |
+| `--provider` | `claude` | AI CLI to run the agents through. `claude` shells out to `claude -p`; `copilot` shells out to the GitHub Copilot CLI. See [Providers](#providers). |
 | `--model` | provider default | Model to use, forwarded verbatim to the selected provider. **claude:** shortcuts `sonnet`, `opus`, `haiku`, or a full ID like `claude-opus-4-8`, `claude-sonnet-4-6` (default `sonnet`). **copilot:** a Copilot model ID such as `claude-sonnet-4.6`, `gpt-5` (default `claude-sonnet-4.6`). |
 | `--max-parallel` | `12` | Max concurrent provider calls across all (agent, chunk) pairs. |
 | `--timeout` | `600` | Per-call timeout in seconds for each provider subprocess. |
@@ -200,7 +200,7 @@ pr-sentinel review-alignment --pr 124 --remote azure
 | `--remote` | `origin` | Git remote for Azure detection and `--fetch`. |
 | `--repo-dir PATH` | cwd | Repository to diff and whose remote is used for detection. |
 | `--out` | `./reports` | Output directory for the alignment report. |
-| `--provider` | `copilot` | AI CLI. |
+| `--provider` | `claude` | AI CLI. |
 | `--model` | provider default | Model forwarded to the provider. |
 | `--timeout` | `600` | Per-call timeout in seconds. |
 | `--no-cache` | off | Bypass the response cache. |
@@ -314,8 +314,8 @@ PR Sentinel doesn't talk to any AI service directly — it shells out to a provi
 
 | Provider | CLI invoked | Prompt delivery | Default model |
 |---|---|---|---|
-| `claude` | `claude --model <m> -p` | stdin | `sonnet` |
-| `copilot` (default) | `copilot --no-color [--model <m>]` | stdin | `claude-sonnet-4.6` |
+| `claude` (default) | `claude --model <m> -p` | stdin | `sonnet` |
+| `copilot` | `copilot --no-color [--model <m>]` | stdin | `claude-sonnet-4.6` |
 
 Notes:
 
@@ -325,7 +325,10 @@ Notes:
 - **Authentication is the provider's.** No API keys live in PR Sentinel — Claude uses your Claude Code login, Copilot uses your `copilot login` session.
 
 ```bash
-# Run the review through GitHub Copilot instead of Claude
+# Run the review through Claude (default)
+pr-sentinel review --base main
+
+# Run the review through GitHub Copilot instead
 pr-sentinel review --base main --provider copilot
 
 # Pick a specific Copilot model
@@ -440,6 +443,8 @@ PR Sentinel can emit several report formats (pick with `--format`), all built fr
 - **`alignment-report.json`** / **`alignment-report.html`** — written by `review-alignment`; contain the alignment verdict sections and gap findings.
 
 `--format both` (the default) writes JSON + HTML; `--format all` adds Markdown. Every run also drops the raw diff it reviewed at `reports/source.diff`. At the end of each run the CLI prints a **Run Stats** panel — total time, provider calls, cache hit rate, and (when the provider reports them) tokens, cost, and Copilot premium requests.
+
+The `review` command automatically selects the HTML renderer based on report content: combined when both code findings and alignment are present, alignment-only when only alignment ran, or a plain code review page otherwise.
 
 ### Code review HTML report
 
@@ -569,9 +574,9 @@ pytest -q
 
 ## Troubleshooting
 
-**`copilot CLI not found on PATH`** — install the GitHub Copilot CLI (`npm install -g @github/copilot-cli`) and confirm `copilot --version` works in the same shell where you run `pr-sentinel`.
+**`claude CLI not found on PATH`** — Claude Code is the default provider. Install Claude Code and confirm `claude --version` works in the same shell where you run `pr-sentinel`.
 
-**`claude CLI not found on PATH`** — only relevant when using `--provider claude`. Install Claude Code and confirm `claude --version` works in the same shell.
+**`copilot CLI not found on PATH`** — only relevant when using `--provider copilot`. Install the GitHub Copilot CLI (`npm install -g @github/copilot-cli`) and confirm `copilot --version` works in the same shell.
 
 **`copilot returned non-JSON output after retry`** — the provider CLI occasionally returns prose instead of JSON. The runner retries once; if it still fails, that chunk's findings are dropped and the agent is marked failed for the run. Re-running usually succeeds.
 
