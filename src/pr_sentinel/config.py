@@ -5,6 +5,7 @@ across modules, or otherwise worth tuning in one place. Module-local
 implementation details (regexes, format strings used in a single file) stay
 where they are used.
 """
+import tomllib
 from pathlib import Path
 
 # --- Orchestration / provider execution -------------------------------------
@@ -154,6 +155,59 @@ CACHE_DIR_ENV = "PR_SENTINEL_CACHE_DIR"
 DEFAULT_CACHE_DIR = Path.home() / ".pr-sentinel" / "cache"
 AUTO_PRUNE_AGE_DAYS = 90
 AUTO_PRUNE_AGE_SECONDS = AUTO_PRUNE_AGE_DAYS * 86400
+
+# --- User config ------------------------------------------------------------
+USER_CONFIG_FILE = Path.home() / ".pr-sentinel" / "config.toml"
+
+# Maps user-facing config key → Click parameter name (used when building default_map).
+CONFIG_KEY_TO_PARAM: dict[str, str] = {
+    "provider":      "provider",
+    "model":         "model",
+    "agents":        "agents",
+    "base":          "base",
+    "remote":        "remote",
+    "fetch":         "do_fetch",
+    "format":        "out_format",
+    "out":           "out_dir",
+    "max_parallel":  "max_parallel",
+    "timeout":       "timeout",
+    "max_file_size": "max_file_size",
+    "chunk_budget":  "chunk_budget",
+}
+
+
+def load_user_config() -> dict:
+    """Return the [review] section of ~/.pr-sentinel/config.toml, or {} if absent."""
+    if not USER_CONFIG_FILE.exists():
+        return {}
+    try:
+        with open(USER_CONFIG_FILE, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        return {}
+    return data.get("review", {})
+
+
+def save_user_config(data: dict) -> None:
+    """Write *data* as the [review] section of ~/.pr-sentinel/config.toml.
+
+    Deletes the file when *data* is empty (all keys unset).
+    """
+    if not data:
+        USER_CONFIG_FILE.unlink(missing_ok=True)
+        return
+    USER_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["[review]\n"]
+    for k in sorted(data):
+        v = data[k]
+        if isinstance(v, bool):
+            lines.append(f"{k} = {'true' if v else 'false'}\n")
+        elif isinstance(v, int):
+            lines.append(f"{k} = {v}\n")
+        else:
+            escaped = str(v).replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'{k} = "{escaped}"\n')
+    USER_CONFIG_FILE.write_text("".join(lines), encoding="utf-8")
 
 # --- CLI ---------------------------------------------------------------------
 DEFAULT_BASE_BRANCH = "main"

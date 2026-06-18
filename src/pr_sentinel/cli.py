@@ -24,11 +24,14 @@ from pr_sentinel.integrations import azure_devops
 from pr_sentinel.config import (
     ALIGNMENT_DIFF_BUDGET,
     AZURE_PAT_ENV_VARS,
+    CONFIG_KEY_TO_PARAM,
     DEFAULT_AGENTS,
     DEFAULT_BASE_BRANCH,
     DEFAULT_CHUNK_BUDGET,
+    DEFAULT_COPILOT_MODEL,
     DEFAULT_FETCH,
     DEFAULT_HEAD_REF,
+    DEFAULT_MODEL,
     DEFAULT_REMOTE,
     DEFAULT_MAX_FILE_SIZE,
     DEFAULT_MAX_PARALLEL,
@@ -41,11 +44,14 @@ from pr_sentinel.config import (
     IGNORE_FILE_NAME,
     REPORT_JSON_FILENAME,
     SOURCE_DIFF_FILENAME,
+    USER_CONFIG_FILE,
     VALID_AGENTS,
     VALID_FORMATS,
     VALID_PROVIDERS,
     default_model_for,
     default_summary_model_for,
+    load_user_config,
+    save_user_config,
 )
 
 console = Console()
@@ -133,8 +139,9 @@ def _apply_pr_branches(
     diff matches what Azure DevOps shows for the PR).
     """
     ctx = click.get_current_context()
-    base_default = ctx.get_parameter_source("base") == ParameterSource.DEFAULT
-    head_default = ctx.get_parameter_source("head") == ParameterSource.DEFAULT
+    _non_explicit = (ParameterSource.DEFAULT, ParameterSource.DEFAULT_MAP)
+    base_default = ctx.get_parameter_source("base") in _non_explicit
+    head_default = ctx.get_parameter_source("head") in _non_explicit
     derived = False
     if base_default and pr.target_branch:
         base = pr.target_branch
@@ -292,8 +299,17 @@ def _serve_push(
 
 @click.group()
 @click.version_option(package_name="pr-sentinel")
-def main() -> None:
+@click.pass_context
+def main(ctx: click.Context) -> None:
     """PR Sentinel — local PR review via GitHub Copilot or Claude Code CLI."""
+    user_cfg = load_user_config()
+    if user_cfg:
+        param_defaults = {
+            CONFIG_KEY_TO_PARAM[k]: v
+            for k, v in user_cfg.items()
+            if k in CONFIG_KEY_TO_PARAM
+        }
+        ctx.default_map = {"review": param_defaults}
 
 
 @main.command()
@@ -1321,6 +1337,123 @@ def list_agents() -> None:
         status_text = "[green]ready[/]" if ready else "[yellow]not implemented[/]"
         table.add_row(a, status_text)
     console.print(table)
+
+
+@main.group(name="config")
+def config_group() -> None:
+    """Manage personal defaults for review flags."""
+
+
+# Maps each configurable key to (type, choices_or_None, built-in-default-string).
+_CONFIG_SPEC: dict[str, tuple] = {
+    "provider":      ("choice", VALID_PROVIDERS,  DEFAULT_PROVIDER),
+    "model":         ("str",    None,             f"{DEFAULT_MODEL} (claude) / {DEFAULT_COPILOT_MODEL} (copilot)"),
+    "agents":        ("agents", None,             ",".join(DEFAULT_AGENTS)),
+    "base":          ("str",    None,             DEFAULT_BASE_BRANCH),
+    "remote":        ("str",    None,             DEFAULT_REMOTE),
+    "fetch":         ("bool",   None,             str(DEFAULT_FETCH).lower()),
+    "format":        ("choice", VALID_FORMATS,    DEFAULT_REPORT_FORMAT),
+    "out":           ("str",    None,             str(DEFAULT_OUT_DIR)),
+    "max_parallel":  ("int",    None,             str(DEFAULT_MAX_PARALLEL)),
+    "timeout":       ("int",    None,             str(DEFAULT_TIMEOUT)),
+    "max_file_size": ("int",    None,             str(DEFAULT_MAX_FILE_SIZE)),
+    "chunk_budget":  ("int",    None,             str(DEFAULT_CHUNK_BUDGET)),
+}
+
+
+def _coerce_config_value(key: str, raw: str):
+    """Validate and coerce *raw* for *key*. Raises click.BadParameter on failure."""
+    kind, choices, _ = _CONFIG_SPEC[key]
+    if kind == "choice":
+        if raw not in choices:
+            raise click.BadParameter(
+                f"'{raw}' is not valid for '{key}'. Choose from: {', '.join(sorted(choices))}"
+            )
+        return raw
+    if kind == "agents":
+        _parse_agents(raw)  # raises click.BadParameter on unknown agent names
+        return raw
+    if kind == "bool":
+        if raw.lower() in ("true", "1", "yes"):
+            return True
+        if raw.lower() in ("false", "0", "no"):
+            return False
+        raise click.BadParameter(
+            f"'{raw}' is not a valid boolean for '{key}'. Use true or false."
+        )
+    if kind == "int":
+        try:
+            v = int(raw)
+        except ValueError:
+            raise click.BadParameter(f"'{raw}' must be an integer.")
+        if v < 1:
+            raise click.BadParameter(f"'{key}' must be at least 1.")
+        return v
+    return raw  # str
+
+
+@config_group.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set_cmd(key: str, value: str) -> None:
+    """Set a default value for a review flag.
+
+    KEY is the flag name without leading dashes (e.g. provider, max-parallel).
+    VALUE is the new default (e.g. copilot, 6).
+    """
+    key = key.replace("-", "_")
+    if key not in _CONFIG_SPEC:
+        raise click.UsageError(
+            f"Unknown key '{key}'. Configurable keys: {', '.join(sorted(_CONFIG_SPEC))}"
+        )
+    coerced = _coerce_config_value(key, value)
+    data = load_user_config()
+    data[key] = coerced
+    save_user_config(data)
+    console.print(f"[green]Set[/] [bold]{key}[/] = [cyan]{coerced}[/]")
+
+
+@config_group.command("unset")
+@click.argument("key")
+def config_unset_cmd(key: str) -> None:
+    """Remove a default value, reverting to the built-in default."""
+    key = key.replace("-", "_")
+    if key not in _CONFIG_SPEC:
+        raise click.UsageError(
+            f"Unknown key '{key}'. Configurable keys: {', '.join(sorted(_CONFIG_SPEC))}"
+        )
+    data = load_user_config()
+    if key not in data:
+        console.print(f"[yellow]'{key}' is not set in your config.[/]")
+        return
+    del data[key]
+    save_user_config(data)
+    console.print(f"[green]Unset[/] [bold]{key}[/].")
+
+
+@config_group.command("list")
+def config_list_cmd() -> None:
+    """Show all configurable keys, your overrides, and the built-in defaults."""
+    data = load_user_config()
+    table = Table(
+        title="PR Sentinel Config",
+        title_style="bold",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    table.add_column("Key", style="bold")
+    table.add_column("Your Default")
+    table.add_column("Built-in Default", style="dim")
+    for key in sorted(_CONFIG_SPEC):
+        _, _, builtin = _CONFIG_SPEC[key]
+        user_val = f"[cyan]{data[key]}[/]" if key in data else "[dim]—[/]"
+        table.add_row(key, user_val, builtin)
+    console.print(table)
+    if data:
+        console.print(f"[dim]Config: {USER_CONFIG_FILE}[/]")
+    else:
+        console.print(f"[dim]No overrides set. Config will be created at: {USER_CONFIG_FILE}[/]")
 
 
 if __name__ == "__main__":
