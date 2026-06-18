@@ -1431,6 +1431,18 @@ def config_unset_cmd(key: str) -> None:
     console.print(f"[green]Unset[/] [bold]{key}[/].")
 
 
+@config_group.command("reset")
+@click.confirmation_option(prompt="Remove all config defaults and revert to built-in values?")
+def config_reset_cmd() -> None:
+    """Remove all defaults, reverting every key to its built-in value."""
+    data = load_user_config()
+    if not data:
+        console.print("[yellow]No config set — nothing to reset.[/]")
+        return
+    save_user_config({})
+    console.print("[green]Reset[/] all config defaults.")
+
+
 @config_group.command("list")
 def config_list_cmd() -> None:
     """Show all configurable keys, your overrides, and the built-in defaults."""
