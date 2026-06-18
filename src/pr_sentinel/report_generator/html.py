@@ -930,10 +930,20 @@ _HTML_SCRIPT = """
   if(!btn) return;
 
   // offsetParent is null for elements inside display:none containers (hidden
-  // tab panels or filtered-out finding cards).
+  // tab panels or filtered-out finding cards). Used for select-all, which only
+  // toggles items in the currently visible tab.
   function visible(cb){return cb.offsetParent!==null;}
+  // A pick is excluded from a push only when its finding card was hidden by the
+  // active severity/agent filter — NOT when it merely sits in an inactive tab.
+  // We can't use offsetParent here: it's null for every other tab's checkboxes,
+  // which would silently drop cross-tab selections (code findings + verdicts +
+  // gaps) from both the count and the push.
+  function filteredOut(cb){
+    var card=cb.closest('.finding');
+    return !!card&&card.style.display==='none';
+  }
   function selectedIds(){
-    return picks.filter(function(cb){return cb.checked&&!cb.disabled&&visible(cb);})
+    return picks.filter(function(cb){return cb.checked&&!cb.disabled&&!filteredOut(cb);})
                .map(function(cb){return cb.getAttribute('data-finding-id');});
   }
   function updateBtn(){
