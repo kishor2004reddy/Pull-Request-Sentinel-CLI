@@ -253,6 +253,59 @@ Notes:
 - **Already-pushed detection.** On page load, the server queries Azure DevOps live and marks items that are already on the PR. Soft-deleted comment threads (deleted in Azure but not yet re-pushed) are excluded from the "already pushed" count.
 - **Auto-detection.** The org/project/repo come from your `origin` remote (HTTPS, `visualstudio.com`, or SSH forms). Pass `--org/--project/--repo` to override or if there's no Azure DevOps remote.
 
+### `pr-sentinel config`
+
+Set personal defaults for review flags so you don't have to repeat them on every run. Settings are stored in `~/.pr-sentinel/config.toml` and apply to the `review` command. Explicit CLI flags always take precedence over config defaults.
+
+```bash
+# Set a default provider
+pr-sentinel config set provider copilot
+
+# Run only security and quality agents by default
+pr-sentinel config set agents security,quality
+
+# Change the default base branch
+pr-sentinel config set base develop
+
+# Reduce parallelism (useful if you hit rate limits)
+pr-sentinel config set max-parallel 6
+
+# See all keys, your overrides, and built-in defaults
+pr-sentinel config list
+
+# Revert a single key to its built-in default
+pr-sentinel config unset provider
+
+# Clear every override at once
+pr-sentinel config reset
+```
+
+| Subcommand | Description |
+|---|---|
+| `config set <key> <value>` | Set a default. Key names match flag names without leading dashes (`max-parallel` or `max_parallel` both work). Value is validated immediately. |
+| `config unset <key>` | Remove a single default, reverting that key to its built-in value. |
+| `config list` | Show all configurable keys, your current overrides, and the built-in defaults. |
+| `config reset` | Remove all overrides (prompts for confirmation). Deletes the config file. |
+
+**Configurable keys:**
+
+| Key | Built-in default | Accepts |
+|-----|-----------------|---------|
+| `provider` | `copilot` | `claude`, `copilot` |
+| `model` | provider default | any model string |
+| `agents` | `security,quality,performance,testing` | comma-separated subset |
+| `base` | `main` | any branch/ref |
+| `remote` | `origin` | any remote name |
+| `fetch` | `false` | `true`, `false` |
+| `format` | `both` | `json`, `markdown`, `html`, `both`, `all` |
+| `out` | `./reports` | any directory path |
+| `max_parallel` | `12` | positive integer |
+| `timeout` | `600` | positive integer (seconds) |
+| `max_file_size` | `20000` | positive integer (chars) |
+| `chunk_budget` | `100000` | positive integer (chars) |
+
+**Precedence:** `built-in defaults` → `~/.pr-sentinel/config.toml` → `CLI flags`
+
 ### `pr-sentinel cache`
 
 Inspect and manage the on-disk response cache.
@@ -433,6 +486,14 @@ Prune cache entries older than a week:
 pr-sentinel cache prune --older-than 7d
 ```
 
+Set personal defaults so you never have to repeat them:
+```bash
+pr-sentinel config set provider copilot
+pr-sentinel config set agents security,quality
+pr-sentinel config set base develop
+pr-sentinel config list
+```
+
 ## Report structure
 
 PR Sentinel can emit several report formats (pick with `--format`), all built from the same underlying report object:
@@ -508,10 +569,11 @@ The JSON report contains the same data in a single structured object suitable fo
 ```
 src/pr_sentinel/
 ├── cli.py                  # Click entrypoint — wires the pipeline together
-│                             (review, review-alignment, push-azure, agents, cache)
+│                             (review, review-alignment, push-azure, agents, cache, config)
 ├── ui.py                   # Rich panel/table builders (pure: data → renderable)
 ├── config.py               # tunable defaults + shared constants (single source of truth)
 │                             ALIGNMENT_DIFF_BUDGET (500k chars, separate from chunk budget)
+│                             load_user_config / save_user_config → ~/.pr-sentinel/config.toml
 ├── runstats.py             # thread-safe per-run metrics (calls, tokens, cost, time)
 ├── diff/
 │   ├── git_diff.py         # git rev-parse, git diff, --staged, fetch, get_current_branch
