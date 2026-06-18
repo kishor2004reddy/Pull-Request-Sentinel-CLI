@@ -201,8 +201,9 @@ def _finding_card_html(
     agent_html = (
         f'<span class="agent-tag">{_e(f.get("agent"))}</span>' if show_agent else ""
     )
+    agent_val = html.escape(str(f.get("agent", "")), quote=True)
     parts = [
-        f'<details class="finding" data-sev="{severity}" data-finding-id="{fid}"{open_attr}>',
+        f'<details class="finding" data-sev="{severity}" data-agent="{agent_val}" data-finding-id="{fid}"{open_attr}>',
         "<summary>"
         f'<input type="checkbox" class="pick" data-finding-id="{fid}" '
         f'aria-label="{pick_label}">'
@@ -239,13 +240,13 @@ def _chips_html(report: dict) -> str:
     counts = _severity_counts(findings)
     sections = report.get("alignment") or []
     coverage_ok = report.get("coverageComplete", True)
-    chips = [f'<span class="chip"><b>{len(findings)}</b> findings</span>']
+    chips = [f'<button class="chip" data-filter-reset type="button"><b>{len(findings)}</b> findings</button>']
     if counts["High"]:
-        chips.append(f'<span class="chip hi"><b>{counts["High"]}</b> High</span>')
+        chips.append(f'<button class="chip hi" data-filter-sev="High" type="button"><b>{counts["High"]}</b> High</button>')
     if counts["Medium"]:
-        chips.append(f'<span class="chip me"><b>{counts["Medium"]}</b> Medium</span>')
+        chips.append(f'<button class="chip me" data-filter-sev="Medium" type="button"><b>{counts["Medium"]}</b> Medium</button>')
     if counts["Low"]:
-        chips.append(f'<span class="chip lo"><b>{counts["Low"]}</b> Low</span>')
+        chips.append(f'<button class="chip lo" data-filter-sev="Low" type="button"><b>{counts["Low"]}</b> Low</button>')
     if sections:
         chips.append(f'<span class="chip"><b>{len(sections)}</b> work item(s)</span>')
     chips.append(
@@ -366,6 +367,17 @@ def _findings_panel_html(
     if not findings:
         p.append(f'<p class="empty">{empty}</p>')
     else:
+        agents = list(dict.fromkeys(f.get("agent", "") for f in findings if f.get("agent")))
+        if agents:
+            p.append('<div class="filter-bar">')
+            p.append('<span class="filter-label">Agent</span>')
+            for agent in agents:
+                p.append(
+                    f'<button class="filter-btn" data-filter-agent="{html.escape(agent)}"'
+                    f' type="button">{html.escape(agent)}</button>'
+                )
+            p.append('</div>')
+        p.append('<p class="filter-no-results" style="display:none">No findings match the active filters.</p>')
         for severity in ("High", "Medium", "Low"):
             for f in (x for x in findings if x["severity"] == severity):
                 p.append(_finding_card_html(f, repo_root))
@@ -377,6 +389,7 @@ def _gaps_panel_html(findings: list[dict], repo_root: str | None) -> str:
     if not findings:
         p.append('<p class="empty">No gaps — every checkable criterion is met. 🎉</p>')
     else:
+        p.append('<p class="filter-no-results" style="display:none">No gaps match the active filters.</p>')
         for severity in ("High", "Medium", "Low"):
             for f in (x for x in findings if x["severity"] == severity):
                 p.append(
@@ -730,6 +743,19 @@ code{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
 .chip.hi b{color:var(--hi);}.chip.me b{color:var(--me);}.chip.lo b{color:var(--lo);}
 .chip.ok{color:var(--ok);border-color:#aceebb;background:var(--ok-bg);}
 .chip.warn{color:var(--me-ink);border-color:#e8d48a;background:var(--me-bg);}
+button.chip{font:inherit;cursor:pointer;transition:box-shadow .12s,opacity .12s;}
+button.chip:hover{opacity:.85;}
+button.chip[data-filter-reset]:hover{box-shadow:0 0 0 2px var(--accent);}
+button.chip.hi.active{box-shadow:0 0 0 2px var(--hi);font-weight:700;}
+button.chip.me.active{box-shadow:0 0 0 2px var(--me);font-weight:700;}
+button.chip.lo.active{box-shadow:0 0 0 2px var(--lo);font-weight:700;}
+.filter-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+.filter-label{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px;}
+.filter-btn{appearance:none;border:1px solid var(--line);background:var(--card);color:var(--muted);
+  font-size:12px;font-weight:600;padding:4px 12px;border-radius:999px;cursor:pointer;transition:all .12s;}
+.filter-btn:hover{border-color:var(--accent);color:var(--accent);}
+.filter-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+.filter-no-results{color:var(--muted);text-align:center;padding:24px 0;font-size:14px;}
 
 /* tabs */
 .tabs{max-width:1060px;margin:14px auto 0;padding:0 22px;display:flex;gap:2px;
@@ -818,35 +844,97 @@ table.agents tr.total td{font-weight:700;border-bottom:none;}
 """
 
 _HTML_SCRIPT = """
-// Tab switching: show the clicked panel, hide the rest.
 (function(){
-  var tabs=Array.prototype.slice.call(document.querySelectorAll('.tab'));
-  var panels=Array.prototype.slice.call(document.querySelectorAll('.tabpanel'));
+  function qs(sel,root){return(root||document).querySelector(sel);}
+  function qsa(sel,root){return[].slice.call((root||document).querySelectorAll(sel));}
+
+  // ── Tab switching ──────────────────────────────────────────────────────────
+  var tabs=qsa('.tab');
+  var panels=qsa('.tabpanel');
+  function switchTab(id){
+    tabs.forEach(function(x){x.classList.toggle('active',x.getAttribute('data-tab')===id);});
+    panels.forEach(function(p){p.classList.toggle('hidden',p.getAttribute('data-panel')!==id);});
+    applyFilters();
+  }
   tabs.forEach(function(t){
-    t.addEventListener('click',function(){
-      var id=t.getAttribute('data-tab');
-      tabs.forEach(function(x){x.classList.toggle('active',x===t);});
-      panels.forEach(function(p){p.classList.toggle('hidden',p.getAttribute('data-panel')!==id);});
+    t.addEventListener('click',function(){switchTab(t.getAttribute('data-tab'));});
+  });
+
+  // ── Filter state ───────────────────────────────────────────────────────────
+  var activeSevs={};
+  var activeAgents={};
+
+  function applyFilters(){
+    var sevKeys=Object.keys(activeSevs).filter(function(k){return activeSevs[k];});
+    var agentKeys=Object.keys(activeAgents).filter(function(k){return activeAgents[k];});
+    var panel=qs('.tabpanel:not(.hidden)');
+    if(!panel) return;
+    var findings=qsa('.finding',panel);
+    var shown=0;
+    findings.forEach(function(f){
+      var ok=(sevKeys.length===0||activeSevs[f.getAttribute('data-sev')])&&
+             (agentKeys.length===0||activeAgents[f.getAttribute('data-agent')||'']);
+      f.style.display=ok?'':'none';
+      if(ok) shown++;
+    });
+    var noRes=qs('.filter-no-results',panel);
+    if(noRes) noRes.style.display=(findings.length>0&&shown===0)?'':'none';
+    updateBtn();
+  }
+
+  // "N findings" chip — clears all filters and switches to findings tab.
+  qsa('[data-filter-reset]').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      activeSevs={};
+      activeAgents={};
+      qsa('[data-filter-sev]').forEach(function(b){b.classList.remove('active');});
+      qsa('[data-filter-agent]').forEach(function(b){b.classList.remove('active');});
+      var t=qs('.tab[data-tab="code"]')||qs('.tab[data-tab="gaps"]');
+      if(t) t.click(); else applyFilters();
     });
   });
-})();
 
-// Push selected items to an Azure DevOps PR. Active only when this page is
-// served by `pr-sentinel push-azure` / `review --pr`, which inject window.PRS_PUSH.
-(function(){
+  // Severity chip buttons (in the chips bar at top of page)
+  qsa('[data-filter-sev]').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var sev=btn.getAttribute('data-filter-sev');
+      activeSevs[sev]=!activeSevs[sev];
+      btn.classList.toggle('active',!!activeSevs[sev]);
+      // If the active panel has no finding cards, switch to the code/gaps tab.
+      var panel=qs('.tabpanel:not(.hidden)');
+      if(panel&&qsa('.finding',panel).length===0){
+        var t=qs('.tab[data-tab="code"]')||qs('.tab[data-tab="gaps"]');
+        if(t){t.click();return;}
+      }
+      applyFilters();
+    });
+  });
+
+  // Agent filter buttons (inside findings panel, via event delegation)
+  document.addEventListener('click',function(e){
+    if(!e.target.hasAttribute('data-filter-agent')) return;
+    var agent=e.target.getAttribute('data-filter-agent');
+    activeAgents[agent]=!activeAgents[agent];
+    e.target.classList.toggle('active',!!activeAgents[agent]);
+    applyFilters();
+  });
+
+  // ── Push selected items to Azure DevOps PR ────────────────────────────────
+  // Active only when served by `pr-sentinel push-azure` / `review --pr`,
+  // which inject window.PRS_PUSH.
   var cfg=window.PRS_PUSH;
-  var btn=document.getElementById('push-btn');
-  var status=document.getElementById('push-status');
-  var selectAll=document.getElementById('push-select-all');
-  var picks=Array.prototype.slice.call(document.querySelectorAll('.pick'));
+  var btn=qs('#push-btn');
+  var status=qs('#push-status');
+  var selectAll=qs('#push-select-all');
+  var picks=qsa('.pick');
   if(!btn) return;
 
-  // offsetParent is null when an element is inside a hidden (display:none) tab
-  // panel, so "visible" means "on the active tab".
-  function visible(cb){ return cb.offsetParent!==null; }
+  // offsetParent is null for elements inside display:none containers (hidden
+  // tab panels or filtered-out finding cards).
+  function visible(cb){return cb.offsetParent!==null;}
   function selectedIds(){
-    return picks.filter(function(cb){return cb.checked&&!cb.disabled;})
-                .map(function(cb){return cb.getAttribute('data-finding-id');});
+    return picks.filter(function(cb){return cb.checked&&!cb.disabled&&visible(cb);})
+               .map(function(cb){return cb.getAttribute('data-finding-id');});
   }
   function updateBtn(){
     var n=selectedIds().length;
@@ -875,9 +963,8 @@ _HTML_SCRIPT = """
     if(cb){
       cb.checked=false;
       // Alignment verdicts (align:*) are upserted — re-pushing refreshes them,
-      // so keep them selectable. Finding/gap threads are idempotent (re-push is
-      // a no-op), so lock them to avoid pointless re-selection.
-      if(id.indexOf('align:')!==0){ cb.disabled=true; }
+      // so keep them selectable. Finding/gap threads are idempotent, so lock.
+      if(id.indexOf('align:')!==0){cb.disabled=true;}
     }
   }
   function markError(id,msg){
@@ -891,8 +978,7 @@ _HTML_SCRIPT = """
     return;
   }
 
-  // On load, mark items already commented on the PR (survives refresh / server
-  // restart) so you don't re-select what's already there.
+  // On load, mark items already commented on the PR so you don't re-select them.
   if(cfg.statusUrl){
     fetch(cfg.statusUrl+'?token='+encodeURIComponent(cfg.token))
       .then(function(r){return r.json();})
