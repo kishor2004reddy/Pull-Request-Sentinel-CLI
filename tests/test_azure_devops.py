@@ -432,3 +432,119 @@ def test_upsert_creates_new_thread_when_only_comment_deleted(monkeypatch):
     assert methods[-1] == "POST"
     body = calls[-1][2]
     assert body["properties"][azure_devops.ALIGNMENT_THREAD_PROPERTY_KEY]["$value"] == "1234"
+
+
+# --- Reading findings back from a PR (drives `pr-sentinel fix`) --------------
+
+def _finding_thread(
+    finding_id="abc123",
+    *,
+    thread_id=10,
+    status="active",
+    comments=None,
+    thread_context=None,
+):
+    return {
+        "id": thread_id,
+        "status": status,
+        "comments": comments
+        if comments is not None
+        else [{"id": 1, "parentCommentId": 0, "isDeleted": False, "content": "body"}],
+        "properties": {azure_devops.THREAD_PROPERTY_KEY: {"$value": finding_id}},
+        "threadContext": thread_context,
+    }
+
+
+def test_list_finding_threads_returns_live_finding(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    thread = _finding_thread(
+        comments=[{"id": 1, "parentCommentId": 0, "isDeleted": False,
+                   "content": "the finding body"}],
+        thread_context={"filePath": "/src/app.py",
+                        "rightFileStart": {"line": 42, "offset": 1}},
+    )
+    monkeypatch.setattr(client, "_request", lambda *a, **k: {"value": [thread]})
+    found = client.list_finding_threads(5)
+    assert len(found) == 1
+    ft = found[0]
+    assert ft.finding_id == "abc123"
+    assert ft.thread_id == 10
+    assert ft.comment == "the finding body"
+    assert ft.file == "src/app.py"   # leading slash stripped
+    assert ft.line == 42
+
+
+def test_list_finding_threads_pr_level_thread_has_no_location(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    # A finding posted without a line falls back to a PR-level thread (no context).
+    thread = _finding_thread(thread_context=None)
+    monkeypatch.setattr(client, "_request", lambda *a, **k: {"value": [thread]})
+    ft = client.list_finding_threads(5)[0]
+    assert ft.file is None and ft.line is None
+
+
+def test_list_finding_threads_skips_resolved_status(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    threads = {"value": [
+        _finding_thread("keep", thread_id=1, status="active"),
+        _finding_thread("gone", thread_id=2, status="fixed"),
+        _finding_thread("gone2", thread_id=3, status="closed"),
+        _finding_thread("gone3", thread_id=4, status="wontFix"),
+    ]}
+    monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
+    ids = [ft.finding_id for ft in client.list_finding_threads(5)]
+    assert ids == ["keep"]
+
+
+def test_list_finding_threads_skips_deleted_root_comment(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    # Root finding comment deleted, only a human reply remains → finding is gone.
+    thread = _finding_thread(comments=[
+        {"id": 1, "parentCommentId": 0, "isDeleted": True, "content": "finding"},
+        {"id": 2, "parentCommentId": 1, "isDeleted": False, "content": "a reply"},
+    ])
+    monkeypatch.setattr(client, "_request", lambda *a, **k: {"value": [thread]})
+    assert client.list_finding_threads(5) == []
+
+
+def test_list_finding_threads_uses_root_comment_not_replies(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    # Root + a human reply both live → we read only the original root comment.
+    thread = _finding_thread(comments=[
+        {"id": 1, "parentCommentId": 0, "isDeleted": False, "content": "the finding"},
+        {"id": 2, "parentCommentId": 1, "isDeleted": False, "content": "human reply"},
+    ])
+    monkeypatch.setattr(client, "_request", lambda *a, **k: {"value": [thread]})
+    assert client.list_finding_threads(5)[0].comment == "the finding"
+
+
+def test_list_finding_threads_ignores_non_sentinel_threads(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+    threads = {"value": [
+        _finding_thread("mine", thread_id=1),
+        {  # a plain human thread with no PR Sentinel marker
+            "id": 2, "status": "active",
+            "comments": [{"id": 9, "parentCommentId": 0, "isDeleted": False,
+                          "content": "human note"}],
+            "properties": {},
+        },
+        {  # an alignment verdict thread — different marker, not a finding
+            "id": 3, "status": "active",
+            "comments": [{"id": 10, "parentCommentId": 0, "isDeleted": False,
+                          "content": "verdict"}],
+            "properties": {azure_devops.ALIGNMENT_THREAD_PROPERTY_KEY: {"$value": "7"}},
+        },
+    ]}
+    monkeypatch.setattr(client, "_request", lambda *a, **k: threads)
+    ids = [ft.finding_id for ft in client.list_finding_threads(5)]
+    assert ids == ["mine"]
+
+
+def test_list_finding_threads_empty_on_request_failure(monkeypatch):
+    client = AzureDevOpsClient(org="o", project="p", repo="r", pat="x")
+
+    def boom(*a, **k):
+        raise AzureDevOpsError("nope")
+
+    monkeypatch.setattr(client, "_request", boom)
+    assert client.list_finding_threads(5) == []

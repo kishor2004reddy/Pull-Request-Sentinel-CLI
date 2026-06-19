@@ -24,6 +24,7 @@ from pr_sentinel.cli.shared import (  # noqa: F401
 from pr_sentinel.cli.review import review
 from pr_sentinel.cli.push_azure import push_azure
 from pr_sentinel.cli.review_alignment import review_alignment
+from pr_sentinel.cli.fix import fix
 from pr_sentinel.cli.agents_cmd import list_agents
 from pr_sentinel.cli.cache_cmd import cache_group
 from pr_sentinel.cli.config_cmd import config_group
@@ -47,6 +48,7 @@ def main(ctx: click.Context) -> None:
 main.add_command(review)
 main.add_command(push_azure)
 main.add_command(review_alignment)
+main.add_command(fix)
 main.add_command(list_agents)
 main.add_command(cache_group)
 main.add_command(config_group)

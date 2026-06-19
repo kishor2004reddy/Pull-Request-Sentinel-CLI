@@ -110,3 +110,18 @@ def run_json(
     return common.run_json(
         _invoke, PROVIDER, prompt, timeout=timeout, model=model, use_cache=use_cache
     )
+
+
+def interactive_argv(prompt: str, model: str | None = None) -> list[str]:
+    """Argv to launch an *interactive* Copilot CLI session seeded with ``prompt``.
+
+    Unlike :func:`run_json` (headless, prompt on stdin), ``copilot -i <prompt>``
+    starts interactive mode and auto-runs the prompt; the CLI's native permission
+    prompts gate every file edit. The caller runs it with inherited stdio and
+    ``cwd`` at the repo root, and blocks until the user exits.
+    """
+    args = [_ensure_copilot_available()]
+    if model:
+        args.extend(["--model", model])
+    args.extend(["-i", prompt])
+    return args

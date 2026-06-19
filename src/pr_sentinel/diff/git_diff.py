@@ -126,3 +126,50 @@ def get_branch_diff(
 def get_staged_diff(unified: int = DEFAULT_UNIFIED_CONTEXT, cwd: Path | None = None) -> str:
     _ensure_repo(cwd)
     return _run(["git", "diff", "--cached", f"--unified={unified}"], cwd=cwd)
+
+
+def is_working_tree_dirty(cwd: Path | None = None) -> bool:
+    """True if tracked files have uncommitted (staged or unstaged) changes.
+
+    Untracked files are ignored on purpose: they carry across a branch switch
+    harmlessly (e.g. the ``reports/`` output dir), so they shouldn't block
+    ``pr-sentinel fix`` from moving to the PR's source branch. Only tracked-file
+    modifications make a checkout unsafe.
+    """
+    _ensure_repo(cwd)
+    out = _run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=cwd)
+    return bool(out.strip())
+
+
+def checkout_branch(name: str, cwd: Path | None = None) -> None:
+    """Check out an existing branch ``name``.
+
+    Git's DWIM means a bare name with no local branch but a matching
+    remote-tracking ref (after a fetch) is created and tracked — so this works
+    for the PR's source branch whether or not it has been checked out locally
+    before.
+    """
+    _ensure_repo(cwd)
+    _run(["git", "checkout", name], cwd=cwd)
+
+
+def create_branch(name: str, start_point: str, cwd: Path | None = None) -> None:
+    """Create branch ``name`` from ``start_point`` and check it out.
+
+    Used by ``fix --branch`` to start an isolated branch from the PR's source
+    branch. Raises :class:`GitError` if ``name`` already exists, so the caller
+    can surface that rather than silently reusing an existing branch.
+    """
+    _ensure_repo(cwd)
+    _run(["git", "checkout", "-b", name, start_point], cwd=cwd)
+
+
+def get_short_status(cwd: Path | None = None) -> str:
+    """``git status --short`` output: the post-fix summary of what changed.
+
+    Covers staged, unstaged, and untracked entries, so it shows everything an
+    interactive fix session touched (edits and any new files). Empty string when
+    nothing changed.
+    """
+    _ensure_repo(cwd)
+    return _run(["git", "status", "--short"], cwd=cwd).strip()

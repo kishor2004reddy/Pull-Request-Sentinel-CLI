@@ -85,6 +85,7 @@ REPORT_HTML_FILENAME = "review-report.html"
 ALIGNMENT_REPORT_JSON_FILENAME = "alignment-report.json"
 ALIGNMENT_REPORT_HTML_FILENAME = "alignment-report.html"
 SOURCE_DIFF_FILENAME = "source.diff"
+FIX_INSTRUCTIONS_FILENAME = "fix-instructions.md"
 IGNORE_FILE_NAME = ".prsentinelignore"
 
 # --- Noise filtering --------------------------------------------------------

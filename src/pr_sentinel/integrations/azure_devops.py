@@ -33,6 +33,11 @@ THREAD_PROPERTY_KEY = "PRSentinelFindingId"
 # new one each time.
 ALIGNMENT_THREAD_PROPERTY_KEY = "PRSentinelAlignmentWorkItem"
 
+# Thread statuses that mean the comment is already resolved/closed, so
+# `pr-sentinel fix` skips them — only still-open findings are worth fixing.
+# Azure returns the status as a string on GET (it's POSTed as the int 1=active).
+RESOLVED_THREAD_STATUSES = frozenset({"fixed", "closed", "wontfix", "bydesign"})
+
 
 class AzureDevOpsError(Exception):
     """Remote parsing failed, or an Azure DevOps API call returned an error."""
@@ -197,6 +202,46 @@ class AzureDevOpsClient:
         for the report UI to mark them as already pushed.
         """
         return self._live_marker_values(pr_id, ALIGNMENT_THREAD_PROPERTY_KEY)
+
+    def list_finding_threads(self, pr_id: int) -> list["FindingThread"]:
+        """Live, unresolved PR Sentinel finding threads on a PR — the `fix` work list.
+
+        Reads the PR's comment threads and keeps the ones PR Sentinel tagged with
+        ``PRSentinelFindingId`` that are still actionable: at least one non-deleted
+        comment (live) and a status that isn't resolved/closed (see
+        ``RESOLVED_THREAD_STATUSES``). Each kept thread carries the verbatim *root*
+        comment — the original PR Sentinel finding, ignoring later human replies —
+        plus the pinned ``file``/``line`` when the thread has a ``threadContext``
+        (PR-level threads have neither). Best-effort: returns an empty list if the
+        threads can't be listed.
+        """
+        try:
+            data = self._request("GET", self._threads_url(pr_id))
+        except AzureDevOpsError:
+            return []
+        threads: list[FindingThread] = []
+        for thread in data.get("value", []):
+            prop = (thread.get("properties") or {}).get(THREAD_PROPERTY_KEY)
+            if not (isinstance(prop, dict) and prop.get("$value")):
+                continue
+            status = str(thread.get("status") or "").strip().lower()
+            if status in RESOLVED_THREAD_STATUSES:
+                continue
+            root = _root_finding_comment(thread.get("comments") or [])
+            if root is None:
+                continue  # no live root comment — the finding is gone
+            file_path, line = _thread_location(thread.get("threadContext"))
+            threads.append(
+                FindingThread(
+                    finding_id=str(prop["$value"]),
+                    thread_id=int(thread.get("id") or 0),
+                    status=status,
+                    comment=root,
+                    file=file_path,
+                    line=line,
+                )
+            )
+        return threads
 
     def create_pr_thread(
         self,
@@ -382,6 +427,61 @@ def _strip_ref(ref: str | None) -> str:
     if not ref:
         return ""
     return re.sub(r"^refs/heads/", "", str(ref).strip())
+
+
+@dataclass
+class FindingThread:
+    """A live, unresolved PR Sentinel finding read back from a PR's comments.
+
+    Drives ``pr-sentinel fix``: each instance is one issue to address, sourced
+    from the PR itself rather than a local report. ``comment`` is the verbatim
+    body of the thread's original PR Sentinel comment; ``file``/``line`` come
+    from the thread's pinned diff location when it has one (PR-level threads
+    leave both ``None``, but the location is still present in ``comment``).
+    """
+
+    finding_id: str
+    thread_id: int
+    status: str
+    comment: str
+    file: str | None = None
+    line: int | None = None
+
+
+def _root_finding_comment(comments: list[dict]) -> str | None:
+    """The verbatim body of a thread's original (root) PR Sentinel comment.
+
+    PR Sentinel opens each finding thread with a single root comment
+    (``parentCommentId == 0``); later human replies are ignored. Returns that
+    comment's content when it's still present, else ``None`` — a deleted root
+    means the finding is gone even if replies remain.
+    """
+    roots = [
+        c for c in comments
+        if not c.get("isDeleted") and c.get("parentCommentId") in (0, None)
+    ]
+    if not roots:
+        return None
+    root = min(roots, key=lambda c: c.get("id") or 0)
+    content = root.get("content")
+    return str(content) if content else None
+
+
+def _thread_location(thread_context: dict | None) -> tuple[str | None, int | None]:
+    """Extract ``(file, line)`` from a thread's pinned diff location.
+
+    PR Sentinel pins file-located findings via ``threadContext`` (``filePath``
+    with a leading slash, 1-based ``rightFileStart.line``); PR-level threads
+    have no context, so both come back ``None``.
+    """
+    if not isinstance(thread_context, dict):
+        return None, None
+    raw_path = thread_context.get("filePath")
+    file_path = str(raw_path).lstrip("/") if raw_path else None
+    start = thread_context.get("rightFileStart")
+    line = start.get("line") if isinstance(start, dict) else None
+    line = int(line) if isinstance(line, int) else None
+    return file_path, line
 
 
 @dataclass

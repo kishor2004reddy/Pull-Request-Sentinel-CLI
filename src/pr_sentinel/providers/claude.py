@@ -103,3 +103,19 @@ def run_json(
     return common.run_json(
         _invoke, PROVIDER, prompt, timeout=timeout, model=model, use_cache=use_cache
     )
+
+
+def interactive_argv(prompt: str, model: str | None = None) -> list[str]:
+    """Argv to launch an *interactive* Claude Code session seeded with ``prompt``.
+
+    Unlike :func:`run_json` (headless ``claude -p``), this starts the full
+    interactive TUI: ``claude [prompt]`` runs the prompt and hands the session to
+    the user, whose native permission prompts gate every file edit. The caller
+    runs it with inherited stdio and ``cwd`` at the repo root, and blocks until
+    the user exits.
+    """
+    args = [_ensure_claude_available()]
+    if model:
+        args.extend(["--model", model])
+    args.append(prompt)
+    return args
